@@ -6,14 +6,14 @@
  */
 package com.force.doozer.flange
 
-import proto.DoozerMsg
-import proto.DoozerMsg.Request.Verb
+import doozer.DoozerMsg
+import doozer.DoozerMsg.Request.Verb
 import com.google.protobuf.ByteString
 import akka.camel.Message
 import DoozerRequest._
 
 object DoozerRequest {
-  type WatchCallback = (WatchNotification => Unit)
+
 }
 
 object DoozerResponse {
@@ -75,16 +75,6 @@ case class SetRequest(path: String, body: Array[Byte], cas: Long) extends Doozer
 
 case class SetResponse(cas: Long)
 
-case class WatchNotification(path: String, value: Array[Byte], cas: Long)
-
-case class WatchRequest(path: String, cas: Long, callback:WatchCallback) extends DoozerRequest {
-  type Response = WatchResponse
-  lazy val toBuilder = builder.setVerb(Verb.WATCH).setPath(path).setRev(cas)
-
-  def toResponse(res: DoozerMsg.Response): WatchResponse = WatchResponse(res.getPath)
-}
-
-case class WatchResponse(path: String)
 
 case class DeleteRequest(path: String, cas: Long) extends DoozerRequest {
   type Response = DeleteResponse

@@ -7,7 +7,7 @@
 
 package com.force.doozer.flange
 
-import proto.DoozerMsg
+import doozer.DoozerMsg
 import akka.actor.Actor._
 import akka.dispatch.Future
 import org.apache.camel.impl.SimpleRegistry
@@ -56,11 +56,7 @@ trait DoozerClient {
 
   def deleteAsync(path: String, cas: Long)(callback: (Either[ErrorResponse, DeleteResponse] => Unit)): Unit
 
-  def watchAsync(path: String, cas: Long)(callback: WatchCallback)(responseCallback: (Either[ErrorResponse, WatchResponse] => Unit)): Unit
 
-  def watch_!(path: String, cas: Long)(callback: WatchCallback): WatchResponse
-
-  def watch(path: String, cas: Long)(callback: WatchCallback): Either[ErrorResponse, WatchResponse]
 }
 
 object Flange {
@@ -164,20 +160,7 @@ class Flange(doozerUri: String) extends DoozerClient {
   }
 
 
-  def watch_!(path: String, cas: Long)(callback: DoozerRequest.WatchCallback) = watch(path, cas)(callback) match {
-    case Right(w@WatchResponse(_)) => w
-    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
-  }
 
-  def watch(path: String, cas: Long)(callback: DoozerRequest.WatchCallback) = complete[WatchResponse](WatchRequest(path, cas, callback)) {
-    case Some(w@WatchResponse(_)) => Right(w)
-  }
-
-  def watchAsync(path: String, cas: Long)(callback: DoozerRequest.WatchCallback)(responseCallback: (Either[ErrorResponse, WatchResponse]) => Unit) {
-    completeFuture[WatchResponse](WatchRequest(path, cas, callback), responseCallback) {
-      case Some(Right(w@WatchResponse(_))) => Right(w)
-    }
-  }
 
   def deleteAsync(path: String, cas: Long)(callback: (Either[ErrorResponse, DeleteResponse]) => Unit) {
     completeFuture[DeleteResponse](DeleteRequest(path, cas), callback) {
@@ -234,7 +217,7 @@ class ConnectionSupervisor(numHosts: Int) extends Actor {
   }
 }
 
-class ClientState(var hosts: Iterable[String], var tag: Int = 0, val watches: HashMap[Int, WatchCallback] = new HashMap[Int, WatchCallback])
+class ClientState(var hosts: Iterable[String], var tag: Int = 0)
 
 class ConnectionFailedException(val host: String, cause: Throwable) extends RuntimeException(cause)
 
@@ -285,11 +268,6 @@ class ConnectionActor(state: ClientState) extends Actor with Producer {
   }
 
   override protected def receiveBeforeProduce = {
-    case watch: WatchRequest => {
-      val send = doSend(watch)
-      state.watches += send.getBodyAs(classOf[DoozerMsg.Request]).getTag -> watch.callback
-      send
-    }
     case req: DoozerRequest => doSend(req)
   }
 
@@ -307,12 +285,8 @@ class ConnectionActor(state: ClientState) extends Actor with Producer {
             case _ => ()
           }
         }
-        case None => {
-          state.watches.get(response.getTag) match {
-            case Some(callback) => spawn(callback(WatchNotification(response.getPath, response.getValue.toByteArray, response.getRev)))
-            case _ => ()
-          }
-        }
+        case None => ()
+
       }
     }
     case Failure(why, h) if why.isInstanceOf[CamelExchangeException] => throw new ConnectionFailedException(host, why)

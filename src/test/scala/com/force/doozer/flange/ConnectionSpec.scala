@@ -32,21 +32,7 @@ class ConnectionSpec extends WordSpec with MustMatchers {
         case x@_ => print(x)
       }
 
-      val watch = ref !! WatchRequest("/d/local/foo", rev, {
-        notification: WatchNotification => {
-          print("WATCH" + new String(notification.value))
-        }
-      })
 
-      watch match {
-        case Some(WatchResponse(path))=>{
-          print("watch OK")
-        }
-        case Some(e@ErrorResponse(_, _)) => {
-          print(e)
-        }
-        case x@_ => print(x)
-      }
 
 
       ref !! SetRequest("/d/local/foo", ("bar" + rev).getBytes, rev) match {
