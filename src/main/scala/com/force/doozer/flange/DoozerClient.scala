@@ -41,17 +41,17 @@ trait DoozerClient {
 
   def getAsync(path: String)(callback: (Either[ErrorResponse, GetResponse] => Unit)): Unit
 
-  def set_!(path: String, value: Array[Byte], cas: Long): SetResponse
+  def set_!(path: String, value: Array[Byte], rev: Long): SetResponse
 
-  def set(path: String, value: Array[Byte], cas: Long): Either[ErrorResponse, SetResponse]
+  def set(path: String, value: Array[Byte], rev: Long): Either[ErrorResponse, SetResponse]
 
-  def setAsync(path: String, value: Array[Byte], cas: Long)(callback: (Either[ErrorResponse, SetResponse] => Unit)): Unit
+  def setAsync(path: String, value: Array[Byte], rev: Long)(callback: (Either[ErrorResponse, SetResponse] => Unit)): Unit
 
-  def delete_!(path: String, cas: Long): DeleteResponse
+  def delete_!(path: String, rev: Long): DeleteResponse
 
-  def delete(path: String, cas: Long): Either[ErrorResponse, DeleteResponse]
+  def delete(path: String, rev: Long): Either[ErrorResponse, DeleteResponse]
 
-  def deleteAsync(path: String, cas: Long)(callback: (Either[ErrorResponse, DeleteResponse] => Unit)): Unit
+  def deleteAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, DeleteResponse] => Unit)): Unit
 
   def rev_! : RevResponse
 
@@ -59,6 +59,11 @@ trait DoozerClient {
 
   def revAsync(callback: (Either[ErrorResponse, RevResponse] => Unit))
 
+  def wait_!(glob: String, rev: Long): WaitResponse
+
+  def wait(glob: String, rev: Long): Either[ErrorResponse, WaitResponse]
+
+  def waitAsync(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Unit)
 
 }
 
@@ -163,34 +168,34 @@ class Flange(doozerUri: String) extends DoozerClient {
   }
 
 
-  def deleteAsync(path: String, cas: Long)(callback: (Either[ErrorResponse, DeleteResponse]) => Unit) {
-    completeFuture[DeleteResponse](DeleteRequest(path, cas), callback) {
+  def deleteAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, DeleteResponse]) => Unit) {
+    completeFuture[DeleteResponse](DeleteRequest(path, rev), callback) {
       case Some(Right(d@DeleteResponse(_))) => Right(d)
     }
   }
 
 
-  def delete_!(path: String, cas: Long) = delete(path, cas) match {
+  def delete_!(path: String, rev: Long) = delete(path, rev) match {
     case Right(d@DeleteResponse(_)) => d
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
 
-  def delete(path: String, cas: Long) = complete[DeleteResponse](DeleteRequest(path, cas)) {
+  def delete(path: String, rev: Long) = complete[DeleteResponse](DeleteRequest(path, rev)) {
     case Some(d@DeleteResponse(_)) => Right(d)
   }
 
-  def setAsync(path: String, value: Array[Byte], cas: Long)(callback: (Either[ErrorResponse, SetResponse]) => Unit) {
-    completeFuture[SetResponse](SetRequest(path, value, cas), callback) {
+  def setAsync(path: String, value: Array[Byte], rev: Long)(callback: (Either[ErrorResponse, SetResponse]) => Unit) {
+    completeFuture[SetResponse](SetRequest(path, value, rev), callback) {
       case Some(Right(s@SetResponse(_))) => Right(s)
     }
   }
 
-  def set_!(path: String, value: Array[Byte], cas: Long) = set(path, value, cas) match {
+  def set_!(path: String, value: Array[Byte], rev: Long) = set(path, value, rev) match {
     case Right(s@SetResponse(_)) => s
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
 
-  def set(path: String, value: Array[Byte], cas: Long) = complete[SetResponse](SetRequest(path, value, cas)) {
+  def set(path: String, value: Array[Byte], rev: Long) = complete[SetResponse](SetRequest(path, value, rev)) {
     case Some(s@SetResponse(_)) => Right(s)
   }
 
@@ -224,6 +229,20 @@ class Flange(doozerUri: String) extends DoozerClient {
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
 
+  def waitAsync(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Unit) = {
+    completeFuture[WaitResponse](WaitRequest(glob, rev), callback) {
+      case Some(Right(w@WaitResponse(_, _, _))) => Right(w)
+    }
+  }
+
+  def wait(glob: String, rev: Long) = complete[WaitResponse](WaitRequest(glob, rev)) {
+    case Some(w@WaitResponse(_, _, _)) => Right(w)
+  }
+
+  def wait_!(glob: String, rev: Long) = wait(glob, rev) match {
+    case Right(w@WaitResponse(_, _,_)) => w
+    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
+  }
 }
 
 class ConnectionSupervisor(numHosts: Int) extends Actor {

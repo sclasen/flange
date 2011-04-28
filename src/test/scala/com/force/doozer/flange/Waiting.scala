@@ -6,7 +6,7 @@
  */
 package com.force.doozer.flange
 
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.{TimeUnit, CountDownLatch}
 
 trait Waiting {
 
@@ -20,6 +20,10 @@ trait Waiting {
 
   def waitForAsync() {
     latch.await()
+  }
+
+  def waitForAsync(timeout: Long): Boolean = {
+    latch.await(timeout, TimeUnit.MILLISECONDS)
   }
 
   def signalAsyncDone() {

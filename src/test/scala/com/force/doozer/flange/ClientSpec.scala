@@ -10,6 +10,7 @@ import org.scalatest.WordSpec
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.MustMatchers
 import akka.actor.Actor._
+import com.force.doozer.flange.DoozerClient._
 
 class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with Waiting {
 
@@ -20,7 +21,7 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
     "must get values correctly" in {
       val path = System.currentTimeMillis.toString
       val value = path + "--value"
-      client.set("/" + path, value.getBytes, 0L)
+      client.set("/" + path, value, 0L)
       debug("set breakpoint here for failover")
       client.get_!("/" + path).value must be(value.getBytes)
       client.getAsync("/" + path)(asyncGet(value, _))
@@ -30,13 +31,35 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
     "must get rev correctly" in {
       (client.rev_!.rev) > 0 must be(true)
     }
+
+    "must wait correctly" in {
+      reset(2)
+
+      val path1 = "/" + System.currentTimeMillis.toString
+      Thread.sleep(10)
+      val path2 = "/" + System.currentTimeMillis.toString
+
+      client.waitAsync(path1, 0L) {
+        wr => signalAsyncDone()
+      }
+      client.waitAsync(path2, 0L) {
+        wr => signalAsyncDone()
+      }
+
+      client.set_!(path1, path1, 0L)
+      client.set_!(path2, path2, 0L)
+
+      waitForAsync(10000) must be(true)
+
+    }
+
   }
 
   def asyncGet(value: String, resp: Either[ErrorResponse, GetResponse]) {
     resp match {
       case Right(GetResponse(respValue, cas)) => {
         respValue must be(value.getBytes)
-        signalAsyncDone
+        signalAsyncDone()
       }
       case x@_ => failure(x)
     }

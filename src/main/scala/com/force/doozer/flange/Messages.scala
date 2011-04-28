@@ -63,7 +63,7 @@ case class GetRequest(path: String) extends DoozerRequest {
   def toResponse(res: DoozerMsg.Response): GetResponse = GetResponse(res.getValue.toByteArray, res.getRev)
 }
 
-case class GetResponse(value: Array[Byte], cas: Long)
+case class GetResponse(value: Array[Byte], rev: Long)
 
 case object RevRequest extends DoozerRequest {
   type Response = RevResponse
@@ -74,9 +74,9 @@ case object RevRequest extends DoozerRequest {
 
 case class RevResponse(rev: Long)
 
-case class SetRequest(path: String, body: Array[Byte], cas: Long) extends DoozerRequest {
+case class SetRequest(path: String, body: Array[Byte], rev: Long) extends DoozerRequest {
   type Response = SetResponse
-  lazy val toBuilder = builder.setVerb(Verb.SET).setPath(path).setValue(ByteString.copyFrom(body)).setRev(cas)
+  lazy val toBuilder = builder.setVerb(Verb.SET).setPath(path).setValue(ByteString.copyFrom(body)).setRev(rev)
 
   def toResponse(res: DoozerMsg.Response): SetResponse = SetResponse(res.getRev)
 }
@@ -84,12 +84,21 @@ case class SetRequest(path: String, body: Array[Byte], cas: Long) extends Doozer
 case class SetResponse(cas: Long)
 
 
-case class DeleteRequest(path: String, cas: Long) extends DoozerRequest {
+case class DeleteRequest(path: String, rev: Long) extends DoozerRequest {
   type Response = DeleteResponse
-  lazy val toBuilder = builder.setVerb(Verb.DEL).setPath(path).setRev(cas)
+  lazy val toBuilder = builder.setVerb(Verb.DEL).setPath(path).setRev(rev)
 
   def toResponse(res: DoozerMsg.Response): DeleteResponse = DeleteResponse(res.getPath)
 }
+
+case class WaitRequest(glob: String, rev: Long) extends DoozerRequest {
+  type Response = WaitResponse
+  lazy val toBuilder = builder.setVerb(Verb.WAIT).setPath(glob)
+
+  def toResponse(res: DoozerMsg.Response): WaitResponse = WaitResponse(res.getPath, res.getValue.toByteArray, res.getRev)
+}
+
+case class WaitResponse(path: String, value: Array[Byte], rev: Long)
 
 case class DeleteResponse(path: String)
 
