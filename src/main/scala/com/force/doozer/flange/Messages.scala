@@ -10,7 +10,6 @@ import doozer.DoozerMsg
 import doozer.DoozerMsg.Request.Verb
 import com.google.protobuf.ByteString
 import akka.camel.Message
-import DoozerRequest._
 
 object DoozerRequest {
 
@@ -65,6 +64,15 @@ case class GetRequest(path: String) extends DoozerRequest {
 }
 
 case class GetResponse(value: Array[Byte], cas: Long)
+
+case object RevRequest extends DoozerRequest {
+  type Response = RevResponse
+  lazy val toBuilder = builder.setVerb(Verb.REV)
+
+  def toResponse(res: DoozerMsg.Response): RevResponse = RevResponse(res.getRev)
+}
+
+case class RevResponse(rev: Long)
 
 case class SetRequest(path: String, body: Array[Byte], cas: Long) extends DoozerRequest {
   type Response = SetResponse

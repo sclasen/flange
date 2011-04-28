@@ -20,7 +20,6 @@ import collection.JavaConversions._
 import collection.mutable.{HashMap, ArrayBuffer}
 import akka.dispatch.CompletableFuture
 import akka.config.Supervision._
-import DoozerRequest._
 import annotation.tailrec
 import util.matching.Regex
 import akka.camel.{Message, Failure, Producer, CamelServiceFactory}
@@ -35,8 +34,6 @@ object DoozerClient {
 }
 
 trait DoozerClient {
-
-  import DoozerRequest._
 
   def get_!(path: String): GetResponse
 
@@ -55,6 +52,12 @@ trait DoozerClient {
   def delete(path: String, cas: Long): Either[ErrorResponse, DeleteResponse]
 
   def deleteAsync(path: String, cas: Long)(callback: (Either[ErrorResponse, DeleteResponse] => Unit)): Unit
+
+  def rev_! : RevResponse
+
+  def rev: Either[ErrorResponse, RevResponse]
+
+  def revAsync(callback: (Either[ErrorResponse, RevResponse] => Unit))
 
 
 }
@@ -160,8 +163,6 @@ class Flange(doozerUri: String) extends DoozerClient {
   }
 
 
-
-
   def deleteAsync(path: String, cas: Long)(callback: (Either[ErrorResponse, DeleteResponse]) => Unit) {
     completeFuture[DeleteResponse](DeleteRequest(path, cas), callback) {
       case Some(Right(d@DeleteResponse(_))) => Right(d)
@@ -207,6 +208,22 @@ class Flange(doozerUri: String) extends DoozerClient {
     case Right(g@GetResponse(_, _)) => g
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
+
+  def revAsync(callback: (Either[ErrorResponse, RevResponse]) => Unit) {
+    completeFuture[RevResponse](RevRequest, callback) {
+      case Some(Right(r@RevResponse(_))) => Right(r)
+    }
+  }
+
+  def rev = complete[RevResponse](RevRequest) {
+    case Some(r@RevResponse(_)) => Right(r)
+  }
+
+  def rev_! = rev match {
+    case Right(r@RevResponse(_)) => r
+    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
+  }
+
 }
 
 class ConnectionSupervisor(numHosts: Int) extends Actor {

@@ -10,6 +10,7 @@ import org.scalatest.WordSpec
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.MustMatchers
 import akka.actor.Actor._
+
 class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with Waiting {
 
   var client: Flange = null
@@ -25,6 +26,10 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
       client.getAsync("/" + path)(asyncGet(value, _))
       waitForAsync
     }
+
+    "must get rev correctly" in {
+      (client.rev_!.rev) > 0 must be(true)
+    }
   }
 
   def asyncGet(value: String, resp: Either[ErrorResponse, GetResponse]) {
@@ -38,7 +43,7 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
   }
 
 
-  def debug(any:Any){
+  def debug(any: Any) {
     any.toString
   }
 
