@@ -94,6 +94,16 @@ case class WaitRequest(glob: String, rev: Long) extends DoozerRequest {
 
 case class WaitResponse(path: String, value: Array[Byte], rev: Long)
 
+case class StatRequest(path: String, rev: Long) extends DoozerRequest {
+  type Response = StatResponse
+  lazy val toBuilder = builder.setVerb(Verb.STAT).setPath(path).setRev(rev)
+
+  def toResponse(res: DoozerMsg.Response): StatResponse = StatResponse(res.getPath, res.getLen, res.getRev)
+}
+
+case class StatResponse(path: String, length:Int, rev:Long)
+
+
 case class DeleteResponse(path: String)
 
 case class ConnectionFailed()

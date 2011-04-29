@@ -18,14 +18,16 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
   var uri = "doozer:?ca=localhost:12321&ca=localhost:8046"
 
   "A Doozer Client" must {
-    "set and get and delete values correctly" in {
+    "set and get and stat and delete values correctly" in {
       (1 to 20) foreach {
         i => {
           val path = "/" + System.currentTimeMillis.toString
           val value = path + "--value"
           val response: SetResponse = client.set_!(path, value, 0L)
           debug("set breakpoint here for failover")
-          client.get_!(path).value must be(value.getBytes)
+          val getResponse: GetResponse = client.get_!(path)
+          getResponse.value must be(value.getBytes)
+          client.stat_!(path,getResponse.rev).length must be(getResponse.value.length)
           client.delete_!(path, response.rev)
         }
       }

@@ -65,6 +65,12 @@ trait DoozerClient {
 
   def waitAsync(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Unit)
 
+  def stat_!(path: String, rev: Long):StatResponse
+
+  def stat(path: String, rev: Long): Either[ErrorResponse, StatResponse]
+
+  def statAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, StatResponse]) => Unit)
+
 }
 
 object Flange {
@@ -241,6 +247,21 @@ class Flange(doozerUri: String) extends DoozerClient {
 
   def wait_!(glob: String, rev: Long) = wait(glob, rev) match {
     case Right(w@WaitResponse(_, _, _)) => w
+    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
+  }
+
+  def statAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, StatResponse]) => Unit) = {
+    completeFuture[StatResponse](StatRequest(path, rev), callback) {
+      case Some(Right(s@StatResponse(_, _, _))) => Right(s)
+    }
+  }
+
+  def stat(path: String, rev: Long) = complete[StatResponse](StatRequest(path, rev)) {
+    case Some(s@StatResponse(_, _, _)) => Right(s)
+  }
+
+  def stat_!(path: String, rev: Long) = stat(path, rev) match {
+    case Right(s@StatResponse(_, _, _)) => s
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
 }
