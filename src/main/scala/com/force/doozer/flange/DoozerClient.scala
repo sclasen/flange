@@ -240,7 +240,7 @@ class Flange(doozerUri: String) extends DoozerClient {
   }
 
   def wait_!(glob: String, rev: Long) = wait(glob, rev) match {
-    case Right(w@WaitResponse(_, _,_)) => w
+    case Right(w@WaitResponse(_, _, _)) => w
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
 }
@@ -262,9 +262,9 @@ class ErrorResponseException(val resp: ErrorResponse) extends RuntimeException()
 class ConnectionActor(state: ClientState) extends Actor with Producer {
   self.lifeCycle = Permanent
 
-  var host: String = null;
-  var requests = new HashMap[Int, DoozerRequest]
-  var responses = new HashMap[Int, Option[CompletableFuture[_]]]
+  private var host: String = null;
+  private var requests = new HashMap[Int, DoozerRequest]
+  private var responses = new HashMap[Int, Option[CompletableFuture[_]]]
   val tagHeader = "doozer.tag"
 
   lazy val endpointUri = {
@@ -272,7 +272,7 @@ class ConnectionActor(state: ClientState) extends Actor with Producer {
       case Some(h) => {
         host = h
         state.hosts = state.hosts.tail
-        "netty:tcp://%s?encoders=#encoders&decoders=#decoders".format(host)
+        "netty:tcp://%s?encoders=#encoders&decoders=#decoders&disconnect=true".format(host)
       }
       case None => {
         become(noConn(), false)
@@ -281,6 +281,8 @@ class ConnectionActor(state: ClientState) extends Actor with Producer {
     }
   }
 
+
+  override def oneway = true
 
   override def preRestartProducer(reason: Throwable) {
     EventHandler.warning(this, "failed:" + endpointUri)
@@ -312,16 +314,16 @@ class ConnectionActor(state: ClientState) extends Actor with Producer {
     case DoozerResponse(response) => {
       requests.remove(response.getTag) match {
         case Some(req) => {
-          val msg = DoozerResponse.isValid(response) match {
+          val msg = DoozerResponse.isOk(response) match {
             case true => req.toResponse(response)
             case false => req.toError(response)
           }
           responses.get(response.getTag) match {
             case Some(future) => future.get.asInstanceOf[CompletableFuture[Any]].completeWithResult(msg)
-            case _ => ()
+            case None => EventHandler.warning(this, "Received a response with tag %d but there was no futute to complete".format(response.getTag))
           }
         }
-        case None => ()
+        case None => EventHandler.warning(this, "Revieved a response with tag %d but there was no request to correlate with".format(response.getTag))
 
       }
     }

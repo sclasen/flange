@@ -15,43 +15,80 @@ import com.force.doozer.flange.DoozerClient._
 class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with Waiting {
 
   var client: Flange = null
-  var uri = "doozer:?ca=localhost:12345&ca=localhost:8046&ca=localhost:8047"
+  var uri = "doozer:?ca=localhost:12321&ca=localhost:8046"
 
-  "A Doozer DoozerClient" must {
-    "must get values correctly" in {
-      val path = System.currentTimeMillis.toString
+  "A Doozer Client" must {
+    "set and get and delete values correctly" in {
+      (1 to 20) foreach {
+        i => {
+          val path = "/" + System.currentTimeMillis.toString
+          val value = path + "--value"
+          val response: SetResponse = client.set_!(path, value, 0L)
+          debug("set breakpoint here for failover")
+          client.get_!(path).value must be(value.getBytes)
+          client.delete_!(path, response.rev)
+        }
+      }
+      val path = "/" + System.currentTimeMillis.toString
       val value = path + "--value"
-      client.set("/" + path, value, 0L)
-      debug("set breakpoint here for failover")
-      client.get_!("/" + path).value must be(value.getBytes)
-      client.getAsync("/" + path)(asyncGet(value, _))
-      waitForAsync
+      val response: SetResponse = client.set_!(path, value, 0L)
+      client.getAsync(path)(asyncGet(value, _))
+      waitForAsync()
+      client.delete_!(path, response.rev)
     }
 
-    "must get rev correctly" in {
+
+
+    "get rev correctly" in {
       (client.rev_!.rev) > 0 must be(true)
     }
 
-    "must wait correctly" in {
-      reset(2)
+    "wait correctly" in {
+      reset(1)
 
       val path1 = "/" + System.currentTimeMillis.toString
       Thread.sleep(10)
       val path2 = "/" + System.currentTimeMillis.toString
 
-      client.waitAsync(path1, 0L) {
-        wr => signalAsyncDone()
-      }
-      client.waitAsync(path2, 0L) {
-        wr => signalAsyncDone()
+      val response: SetResponse = client.set_!(path1, path1, 0L)
+      val response2: SetResponse = client.set_!(path2, path2, 0L)
+
+      client.waitAsync(path1, response.rev) {
+        wr => {
+          wr match {
+            case Right(w@WaitResponse(_, value, _)) => {
+              System.out.println(w.toString)
+              System.out.println(new String(value))
+              signalAsyncDone()
+            }
+            case Left(ErrorResponse(code, msg)) => System.out.println(code + " " + msg)
+          }
+        }
       }
 
-      client.set_!(path1, path1, 0L)
-      client.set_!(path2, path2, 0L)
+      client.waitAsync(path2, response2.rev) {
+        wr => {
+          wr match {
+            case Right(w@WaitResponse(_, value, _)) => {
+              System.out.println(w.toString)
+              System.out.println(new String(value))
+              signalAsyncDone()
+            }
+            case Left(ErrorResponse(code, msg)) => System.out.println(code + " " + msg)
+          }
+
+
+        }
+      }
+
+      client.set_!(path2, path1, response2.rev)
+      client.set_!(path1, path2, response.rev)
 
       waitForAsync(10000) must be(true)
+      System.out.println("DONE")
 
     }
+
 
   }
 

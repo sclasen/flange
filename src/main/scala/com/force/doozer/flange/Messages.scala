@@ -10,6 +10,7 @@ import doozer.DoozerMsg
 import doozer.DoozerMsg.Request.Verb
 import com.google.protobuf.ByteString
 import akka.camel.Message
+import doozer.DoozerMsg.Response.Err
 
 object DoozerRequest {
 
@@ -30,15 +31,7 @@ object DoozerResponse {
     }
   }
 
-  def isValid(msg: DoozerMsg.Response): Boolean = (msg.getFlags & valid) > 0
-
-  def isDone(msg: DoozerMsg.Response): Boolean = (msg.getFlags & done) > 0
-
-  def isSet(msg: DoozerMsg.Response): Boolean = (msg.getFlags & set) > 0
-
-  def isDel(msg: DoozerMsg.Response): Boolean = (msg.getFlags & del) > 0
-
-  def isOk(msg: DoozerMsg.Response): Boolean = msg.getErrCode == null
+   def isOk(msg: DoozerMsg.Response): Boolean = msg.getErrCode == null || msg.getErrCode == Err.OTHER
 }
 
 sealed trait DoozerRequest {
@@ -74,6 +67,7 @@ case object RevRequest extends DoozerRequest {
 
 case class RevResponse(rev: Long)
 
+
 case class SetRequest(path: String, body: Array[Byte], rev: Long) extends DoozerRequest {
   type Response = SetResponse
   lazy val toBuilder = builder.setVerb(Verb.SET).setPath(path).setValue(ByteString.copyFrom(body)).setRev(rev)
@@ -81,7 +75,7 @@ case class SetRequest(path: String, body: Array[Byte], rev: Long) extends Doozer
   def toResponse(res: DoozerMsg.Response): SetResponse = SetResponse(res.getRev)
 }
 
-case class SetResponse(cas: Long)
+case class SetResponse(rev: Long)
 
 
 case class DeleteRequest(path: String, rev: Long) extends DoozerRequest {
@@ -93,7 +87,7 @@ case class DeleteRequest(path: String, rev: Long) extends DoozerRequest {
 
 case class WaitRequest(glob: String, rev: Long) extends DoozerRequest {
   type Response = WaitResponse
-  lazy val toBuilder = builder.setVerb(Verb.WAIT).setPath(glob)
+  lazy val toBuilder = builder.setVerb(Verb.WAIT).setPath(glob).setRev(rev)
 
   def toResponse(res: DoozerMsg.Response): WaitResponse = WaitResponse(res.getPath, res.getValue.toByteArray, res.getRev)
 }

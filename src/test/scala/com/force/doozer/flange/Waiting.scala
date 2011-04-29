@@ -11,7 +11,7 @@ import java.util.concurrent.{TimeUnit, CountDownLatch}
 trait Waiting {
 
 
-  var latch = new CountDownLatch(1)
+  @volatile var latch = new CountDownLatch(1)
 
   def reset(count: Int) {
     while (latch.getCount > 0) latch.countDown()
