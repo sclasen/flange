@@ -35,11 +35,11 @@ object DoozerClient {
 
 trait DoozerClient {
 
-  def get_!(path: String): GetResponse
+  def get_!(path: String,rev:Long=0L): GetResponse
 
-  def get(path: String): Either[ErrorResponse, GetResponse]
+  def get(path: String, rev:Long=0L): Either[ErrorResponse, GetResponse]
 
-  def getAsync(path: String)(callback: (Either[ErrorResponse, GetResponse] => Unit)): Unit
+  def getAsync(path: String,rev:Long=0L)(callback: (Either[ErrorResponse, GetResponse] => Unit)): Unit
 
   def set_!(path: String, value: Array[Byte], rev: Long): SetResponse
 
@@ -70,6 +70,19 @@ trait DoozerClient {
   def stat(path: String, rev: Long): Either[ErrorResponse, StatResponse]
 
   def statAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, StatResponse]) => Unit)
+
+  def getdir(dir:String,rev:Long,offset:Int): Either[ErrorResponse,GetdirResponse]
+
+  def getdir_!(dir:String,rev:Long,offset:Int): GetdirResponse
+
+  def getdirAsync(dir:String,rev:Long,offset:Int)(callback: (Either[ErrorResponse,GetdirResponse])=>Unit)
+
+  def walk(glob:String,rev:Long,offset:Int): Either[ErrorResponse,WalkResponse]
+
+  def walk_!(glob:String,rev:Long,offset:Int): WalkResponse
+
+  def walkAsync(glob:String,rev:Long,offset:Int)(callback: (Either[ErrorResponse,WalkResponse])=>Unit)
+
 
 }
 
@@ -205,17 +218,17 @@ class Flange(doozerUri: String) extends DoozerClient {
     case Some(s@SetResponse(_)) => Right(s)
   }
 
-  def getAsync(path: String)(callback: (Either[ErrorResponse, GetResponse]) => Unit) {
-    completeFuture[GetResponse](GetRequest(path), callback) {
+  def getAsync(path: String,rev:Long=0L)(callback: (Either[ErrorResponse, GetResponse]) => Unit) {
+    completeFuture[GetResponse](GetRequest(path,rev), callback) {
       case Some(Right(g@GetResponse(_, _))) => Right(g)
     }
   }
 
-  def get(path: String): Either[ErrorResponse, GetResponse] = complete[GetResponse](GetRequest(path)) {
+  def get(path: String, rev:Long=0L): Either[ErrorResponse, GetResponse] = complete[GetResponse](GetRequest(path,rev)) {
     case Some(g@GetResponse(_, _)) => Right(g)
   }
 
-  def get_!(path: String) = get(path) match {
+  def get_!(path: String,rev:Long=0L) = get(path,rev) match {
     case Right(g@GetResponse(_, _)) => g
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
@@ -260,9 +273,41 @@ class Flange(doozerUri: String) extends DoozerClient {
     case Some(s@StatResponse(_, _, _)) => Right(s)
   }
 
+
+
   def stat_!(path: String, rev: Long) = stat(path, rev) match {
     case Right(s@StatResponse(_, _, _)) => s
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
+  }
+
+  def getdir(dir: String, rev: Long, offset:Int) = complete[GetdirResponse](GetdirRequest(dir,rev,offset)){
+    case Some(g@GetdirResponse(_,_)) => Right(g)
+  }
+
+  def getdir_!(dir: String, rev: Long, offset: Int) = getdir(dir,rev,offset) match {
+    case Right(g@GetdirResponse(_,_))=> g
+    case Left(e@ErrorResponse(_,_)) => throw new ErrorResponseException(e)
+  }
+
+  def getdirAsync(dir: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, GetdirResponse]) => Unit) = {
+    completeFuture[GetdirResponse](GetdirRequest(dir,rev,offset),callback){
+      case Some(Right(g@GetdirResponse(_,_))) => Right(g)
+    }
+  }
+
+  def walk(glob: String, rev: Long, offset:Int) = complete[WalkResponse](WalkRequest(glob,rev,offset)){
+    case Some(w@WalkResponse(_,_,_)) => Right(w)
+  }
+
+  def walk_!(glob: String, rev: Long, offset: Int) = walk(glob,rev,offset) match {
+    case Right(w@WalkResponse(_,_,_))=> w
+    case Left(e@ErrorResponse(_,_)) => throw new ErrorResponseException(e)
+  }
+
+  def walkAsync(glob: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, WalkResponse]) => Unit) = {
+    completeFuture[WalkResponse](WalkRequest(glob,rev,offset),callback){
+      case Some(Right(w@WalkResponse(_,_,_))) => Right(w)
+    }
   }
 }
 
@@ -303,7 +348,7 @@ class ConnectionActor(state: ClientState) extends Actor with Producer {
   }
 
 
-  override def oneway = true
+  //override def oneway = true
 
   override def preRestartProducer(reason: Throwable) {
     EventHandler.warning(this, "failed:" + endpointUri)

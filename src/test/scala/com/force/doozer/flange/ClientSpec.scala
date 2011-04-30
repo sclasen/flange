@@ -33,13 +33,68 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
       }
       val path = "/" + System.currentTimeMillis.toString
       val value = path + "--value"
+      val value2 = path + "--value2"
       val response: SetResponse = client.set_!(path, value, 0L)
-      client.getAsync(path)(asyncGet(value, _))
-      waitForAsync()
-      client.delete_!(path, response.rev)
+      val response2: SetResponse = client.set_!(path, value2, response.rev)
+      client.getAsync(path)(asyncGet(value2, _))
+      waitForAsync(1000) must be (true)
+      client.get_!(path, response.rev).value must be(value.getBytes)
+      client.get_!(path,response2.rev).value must be(value2.getBytes)
+      client.delete_!(path, response2.rev)
     }
 
 
+    "getdir correctly" in{
+      val path = "/" + System.currentTimeMillis.toString
+      val a = path + "/a"
+      val b = path + "/b"
+      val c = path + "/c"
+      val resA: SetResponse = client.set_!(a, a, 0)
+      val resB: SetResponse = client.set_!(b, b, 0)
+      val resC: SetResponse = client.set_!(c, c, 0)
+
+      client.getdir_!(path, resA.rev, 0).path must be("a")
+      evaluating {client.getdir_!(path,resA.rev,1)} must produce[ErrorResponseException]
+
+      client.getdir_!(path, resB.rev, 0).path must be("a")
+      client.getdir_!(path, resB.rev, 1).path must be("b")
+      evaluating {client.getdir_!(path,resB.rev,2)} must produce[ErrorResponseException]
+
+      client.getdir_!(path, resC.rev, 0).path must be("a")
+      client.getdir_!(path, resC.rev, 1).path must be("b")
+      client.getdir_!(path, resC.rev, 2).path must be("c")
+      evaluating {client.getdir_!(path,resC.rev,3)} must produce[ErrorResponseException]
+
+    }
+
+    "walk correctly" in{
+      val path = "/" + System.currentTimeMillis.toString
+      val pathglob = path + "/*"
+      val a = path + "/a"
+      val b = path + "/b"
+      val c = path + "/c"
+      val resA: SetResponse = client.set_!(a, a, 0)
+      val resB: SetResponse = client.set_!(b, b, 0)
+      val resC: SetResponse = client.set_!(c, c, 0)
+
+      client.walk_!(pathglob, resA.rev, 0).path must be(a)
+      client.walk_!(pathglob, resA.rev, 0).value must be(a.getBytes)
+      evaluating {client.walk_!(path,resA.rev,1)} must produce[ErrorResponseException]
+
+      client.walk_!(pathglob, resB.rev, 0).path must be(a)
+      client.walk_!(pathglob, resB.rev, 1).path must be(b)
+      client.walk_!(pathglob, resB.rev, 0).value must be(a.getBytes)
+      client.walk_!(pathglob, resB.rev, 1).value must be(b.getBytes)
+      evaluating {client.walk_!(path,resB.rev,2)} must produce[ErrorResponseException]
+
+      client.walk_!(pathglob, resC.rev, 0).path must be(a)
+      client.walk_!(pathglob, resC.rev, 1).path must be(b)
+      client.walk_!(pathglob, resC.rev, 2).path must be(c)
+      client.walk_!(pathglob, resC.rev, 0).value must be(a.getBytes)
+      client.walk_!(pathglob, resC.rev, 1).value must be(b.getBytes)
+      client.walk_!(pathglob, resC.rev, 2).value must be(c.getBytes)
+      evaluating {client.walk_!(path,resC.rev,3)} must produce[ErrorResponseException]
+    }
 
     "get rev correctly" in {
       (client.rev_!.rev) > 0 must be(true)

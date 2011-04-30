@@ -31,7 +31,7 @@ object DoozerResponse {
     }
   }
 
-   def isOk(msg: DoozerMsg.Response): Boolean = msg.getErrCode == null || msg.getErrCode == Err.OTHER
+  def isOk(msg: DoozerMsg.Response): Boolean = msg.getErrCode == null || msg.getErrCode == Err.OTHER
 }
 
 sealed trait DoozerRequest {
@@ -49,9 +49,13 @@ sealed trait DoozerRequest {
 
 case class ErrorResponse(code: String, description: String)
 
-case class GetRequest(path: String) extends DoozerRequest {
+case class GetRequest(path: String, rev: Long) extends DoozerRequest {
   type Response = GetResponse
-  lazy val toBuilder = builder.setVerb(Verb.GET).setPath(path)
+  lazy val toBuilder = {
+    val b = builder.setVerb(Verb.GET).setPath(path)
+    if (rev != 0L) b.setRev(rev)
+    b
+  }
 
   def toResponse(res: DoozerMsg.Response): GetResponse = GetResponse(res.getValue.toByteArray, res.getRev)
 }
@@ -101,8 +105,28 @@ case class StatRequest(path: String, rev: Long) extends DoozerRequest {
   def toResponse(res: DoozerMsg.Response): StatResponse = StatResponse(res.getPath, res.getLen, res.getRev)
 }
 
-case class StatResponse(path: String, length:Int, rev:Long)
+case class StatResponse(path: String, length: Int, rev: Long)
 
+
+case class GetdirRequest(dir: String, rev: Long, offset: Int = 0) extends DoozerRequest {
+  type Response = GetdirResponse
+  lazy val toBuilder = builder.setVerb(Verb.GETDIR).setPath(dir).setRev(rev).setOffset(offset)
+
+  def toResponse(res: DoozerMsg.Response): GetdirResponse = GetdirResponse(res.getPath, res.getRev)
+
+  def next() = copy(offset = this.offset + 1)
+}
+
+case class GetdirResponse(path: String, rev: Long)
+
+case class WalkRequest(path: String, rev: Long, offset:Int=0) extends DoozerRequest {
+  type Response = WalkResponse
+  lazy val toBuilder = builder.setVerb(Verb.WALK).setPath(path).setRev(rev).setOffset(offset)
+
+  def toResponse(res: DoozerMsg.Response): WalkResponse = WalkResponse(res.getPath, res.getValue.toByteArray, res.getRev)
+}
+
+case class WalkResponse(path: String, value:Array[Byte], rev: Long)
 
 case class DeleteResponse(path: String)
 
