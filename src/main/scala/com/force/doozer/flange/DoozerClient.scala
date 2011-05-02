@@ -8,6 +8,8 @@
 package com.force.doozer.flange
 
 import doozer.DoozerMsg
+import doozer.DoozerMsg.Response
+import doozer.DoozerMsg.Response.Err
 import akka.actor.Actor._
 import akka.dispatch.Future
 import org.apache.camel.impl.SimpleRegistry
@@ -21,6 +23,7 @@ import collection.mutable.{HashMap, ArrayBuffer}
 import akka.dispatch.CompletableFuture
 import akka.config.Supervision._
 import annotation.tailrec
+import reflect.Manifest
 import util.matching.Regex
 import akka.camel.{Message, Failure, Producer, CamelServiceFactory}
 import akka.event.EventHandler
@@ -82,6 +85,16 @@ trait DoozerClient {
   def walk_!(glob:String,rev:Long,offset:Int): WalkResponse
 
   def walkAsync(glob:String,rev:Long,offset:Int)(callback: (Either[ErrorResponse,WalkResponse])=>Unit)
+
+  def walk_all(glob:String, rev:Long): Either[ErrorResponse,List[WalkResponse]]
+
+  def getdir_all(dir:String, rev:Long):Either[ErrorResponse,List[GetdirResponse]]
+
+  def walk_all_!(glob:String, rev:Long): List[WalkResponse]
+
+  def getdir_all_!(dir:String, rev:Long):List[GetdirResponse]
+
+  def watch(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Boolean)
 
 
 }
@@ -308,6 +321,42 @@ class Flange(doozerUri: String) extends DoozerClient {
     completeFuture[WalkResponse](WalkRequest(glob,rev,offset),callback){
       case Some(Right(w@WalkResponse(_,_,_))) => Right(w)
     }
+  }
+
+  def watch(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Boolean) = {
+    def inner(either:Either[ErrorResponse, WaitResponse]){
+        if(callback.apply(either)){
+          waitAsync(glob,rev+1)(inner(_))
+        }
+    }
+    waitAsync(glob,rev)(inner(_))
+  }
+
+  def getdir_all(dir: String, rev: Long) = {
+    all_internal[GetdirResponse](getdir(dir,rev,_),0,Nil)
+  }
+
+  @tailrec
+  private def all_internal[T](func:Int => Either[ErrorResponse,T],offset:Int, responses:List[T]):Either[ErrorResponse,List[T]] ={
+    func.apply(offset) match {
+      case Left(ErrorResponse(code,msg)) if code eq Err.RANGE.name() => Right(responses)
+      case Left(e@ErrorResponse(_,_)) => Left(e)
+      case Right(t:T)=> all_internal(func, offset+1, responses :+ t )
+    }
+  }
+
+  def walk_all(glob: String, rev: Long) = {
+    all_internal[WalkResponse](walk(glob,rev,_),0,Nil)
+  }
+
+  def getdir_all_!(dir: String, rev: Long) = getdir_all(dir,rev) match {
+    case Right(responses) => responses
+    case Left(e@ErrorResponse(_,_)) => throw new ErrorResponseException(e)
+  }
+
+  def walk_all_!(glob: String, rev: Long) = walk_all(glob,rev) match {
+    case Right(responses) => responses
+    case Left(e@ErrorResponse(_,_)) => throw new ErrorResponseException(e)
   }
 }
 

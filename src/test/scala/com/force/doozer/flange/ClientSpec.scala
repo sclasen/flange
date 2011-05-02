@@ -65,6 +65,7 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
       client.getdir_!(path, resC.rev, 2).path must be("c")
       evaluating {client.getdir_!(path,resC.rev,3)} must produce[ErrorResponseException]
 
+      client.getdir_all_!(path, resC.rev).map(_.path) must be(List("a","b","c"))
     }
 
     "walk correctly" in{
@@ -94,6 +95,9 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
       client.walk_!(pathglob, resC.rev, 1).value must be(b.getBytes)
       client.walk_!(pathglob, resC.rev, 2).value must be(c.getBytes)
       evaluating {client.walk_!(path,resC.rev,3)} must produce[ErrorResponseException]
+
+      client.walk_all_!(pathglob,resC.rev).map(w=>new String(w.value)) must be(List(a,b,c))
+      client.walk_all_!(pathglob,resC.rev).map(_.path) must be(List(a,b,c))
     }
 
     "get rev correctly" in {
@@ -138,11 +142,24 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
         }
       }
 
-      client.set_!(path2, path1, response2.rev)
+      var set: SetResponse = client.set_!(path2, path1, response2.rev)
       client.set_!(path1, path2, response.rev)
 
       waitForAsync(10000) must be(true)
       System.out.println("DONE")
+
+      reset(2)
+      client.watch(path2,set.rev){
+        either=>{
+          debug(either)
+          signalAsyncDone()
+          true
+        }
+      }
+
+      set = client.set_!(path2,"foowait1",set.rev)
+      client.set_!(path2,"foowait2",set.rev)
+      waitForAsync(10000) must be(true)
 
     }
 
@@ -161,7 +178,7 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
 
 
   def debug(any: Any) {
-    any.toString
+    System.out.println(any.toString)
   }
 
   def failure(any: Any) {
