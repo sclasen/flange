@@ -21,7 +21,7 @@ class ConnectionSpec extends WordSpec with MustMatchers {
       val service = Flange.camelService
       actorOf(new ConnectionActor(new ClientState(List("localhost:8046").toIterable))).start()
       val ref: ActorRef = registry.actorsFor[ConnectionActor].head
-      ref !! GetRequest("/d/local/foo") match {
+      ref !! GetRequest("/d/local/foo",rev) match {
         case Some(GetResponse(_, curr)) => {
           rev = curr
           print("got")
