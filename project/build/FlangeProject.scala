@@ -24,6 +24,7 @@ class FlangeProject(info: ProjectInfo) extends DefaultProject(info) {
   import Repositories._
 
   lazy val nettyModuleConfig = ModuleConfiguration("org.jboss.netty", JBossRepo)
+  lazy val akkaoduleConfig = ModuleConfiguration("se.scalablesolutions.akka", AkkaRepo)
   lazy val scalaTestModuleConfig = ModuleConfiguration("org.scalatest", ScalaToolsSnapshots)
   val localMavenRepo = LocalMavenRepo
 
@@ -33,7 +34,7 @@ class FlangeProject(info: ProjectInfo) extends DefaultProject(info) {
   // Versions
   // -------------------------------------------------------------------------------------------------------------------
 
-  lazy val AKKA_VERSION = "1.1-SNAPSHOT"
+  lazy val AKKA_VERSION = "1.1"
   lazy val CAMEL_VERSION = "2.7.0"
   lazy val SCALATEST_VERSION = "1.4-SNAPSHOT"
   lazy val SLF4J_VERSION = "1.6.0"
@@ -46,14 +47,8 @@ class FlangeProject(info: ProjectInfo) extends DefaultProject(info) {
 
     // Compile
     lazy val akka_actor = "se.scalablesolutions.akka" % "akka-actor" % AKKA_VERSION % "compile" withSources ()
-    //ApacheV2
-    lazy val akka_camel = "se.scalablesolutions.akka" % "akka-camel" % AKKA_VERSION % "compile" withSources ()
-    //ApacheV2
+   //ApacheV2
     lazy val akka_slf4j = "se.scalablesolutions.akka" % "akka-slf4j" % AKKA_VERSION % "compile"
-    //ApacheV2
-    lazy val camel_core = "org.apache.camel" % "camel-core" % CAMEL_VERSION % "compile" withSources () intransitive
-    //ApacheV2
-    lazy val camel_scala = "org.apache.camel" % "camel-scala" % CAMEL_VERSION % "compile" withSources ()
     //ApacheV2
     lazy val camel_netty = "org.apache.camel" % "camel-netty" % CAMEL_VERSION % "compile" withSources ()
     //ApacheV2
@@ -81,10 +76,6 @@ class FlangeProject(info: ProjectInfo) extends DefaultProject(info) {
 
   val protobuf = Dependencies.protobuf
   val akka_actor = Dependencies.akka_actor
-  val akka_camel = Dependencies.akka_camel
-  val camel = Dependencies.camel_core
-  val camel_scala = Dependencies.camel_scala
-  val camel_netty = Dependencies.camel_netty
   val netty = Dependencies.netty
   val akka_slf4j = Dependencies.akka_slf4j
   val slf4j_api = Dependencies.slf4_api

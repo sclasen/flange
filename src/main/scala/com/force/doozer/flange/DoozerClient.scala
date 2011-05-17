@@ -8,12 +8,9 @@
 package com.force.doozer.flange
 
 import doozer.DoozerMsg
-import doozer.DoozerMsg.Response
 import doozer.DoozerMsg.Response.Err
 import akka.actor.Actor._
 import akka.dispatch.Future
-import org.apache.camel.impl.SimpleRegistry
-import org.apache.camel.impl.DefaultCamelContext
 import org.jboss.netty.channel.ChannelUpstreamHandler
 import org.jboss.netty.channel.ChannelDownstreamHandler
 import org.jboss.netty.handler.codec.protobuf.{ProtobufDecoder, ProtobufEncoder}
@@ -23,12 +20,11 @@ import collection.mutable.{HashMap, ArrayBuffer}
 import akka.dispatch.CompletableFuture
 import akka.config.Supervision._
 import annotation.tailrec
-import reflect.Manifest
 import util.matching.Regex
-import akka.camel.{Message, Failure, Producer, CamelServiceFactory}
+
 import akka.event.EventHandler
 import akka.actor.{MaximumNumberOfRestartsWithinTimeRangeReached, Actor}
-import org.apache.camel.CamelExchangeException
+
 
 object DoozerClient {
   implicit def stringToByteArray(value: String): Array[Byte] = value.getBytes("UTF-8")
@@ -38,11 +34,11 @@ object DoozerClient {
 
 trait DoozerClient {
 
-  def get_!(path: String,rev:Long=0L): GetResponse
+  def get_!(path: String, rev: Long = 0L): GetResponse
 
-  def get(path: String, rev:Long=0L): Either[ErrorResponse, GetResponse]
+  def get(path: String, rev: Long = 0L): Either[ErrorResponse, GetResponse]
 
-  def getAsync(path: String,rev:Long=0L)(callback: (Either[ErrorResponse, GetResponse] => Unit)): Unit
+  def getAsync(path: String, rev: Long = 0L)(callback: (Either[ErrorResponse, GetResponse] => Unit)): Unit
 
   def set_!(path: String, value: Array[Byte], rev: Long): SetResponse
 
@@ -62,37 +58,38 @@ trait DoozerClient {
 
   def revAsync(callback: (Either[ErrorResponse, RevResponse] => Unit))
 
+  //TODO support arbitrarily long waits, will timeout after default akka timeout currently
   def wait_!(glob: String, rev: Long): WaitResponse
 
   def wait(glob: String, rev: Long): Either[ErrorResponse, WaitResponse]
 
   def waitAsync(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Unit)
 
-  def stat_!(path: String, rev: Long):StatResponse
+  def stat_!(path: String, rev: Long): StatResponse
 
   def stat(path: String, rev: Long): Either[ErrorResponse, StatResponse]
 
   def statAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, StatResponse]) => Unit)
 
-  def getdir(dir:String,rev:Long,offset:Int): Either[ErrorResponse,GetdirResponse]
+  def getdir(dir: String, rev: Long, offset: Int): Either[ErrorResponse, GetdirResponse]
 
-  def getdir_!(dir:String,rev:Long,offset:Int): GetdirResponse
+  def getdir_!(dir: String, rev: Long, offset: Int): GetdirResponse
 
-  def getdirAsync(dir:String,rev:Long,offset:Int)(callback: (Either[ErrorResponse,GetdirResponse])=>Unit)
+  def getdirAsync(dir: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, GetdirResponse]) => Unit)
 
-  def walk(glob:String,rev:Long,offset:Int): Either[ErrorResponse,WalkResponse]
+  def walk(glob: String, rev: Long, offset: Int): Either[ErrorResponse, WalkResponse]
 
-  def walk_!(glob:String,rev:Long,offset:Int): WalkResponse
+  def walk_!(glob: String, rev: Long, offset: Int): WalkResponse
 
-  def walkAsync(glob:String,rev:Long,offset:Int)(callback: (Either[ErrorResponse,WalkResponse])=>Unit)
+  def walkAsync(glob: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, WalkResponse]) => Unit)
 
-  def walk_all(glob:String, rev:Long): Either[ErrorResponse,List[WalkResponse]]
+  def walk_all(glob: String, rev: Long): Either[ErrorResponse, List[WalkResponse]]
 
-  def getdir_all(dir:String, rev:Long):Either[ErrorResponse,List[GetdirResponse]]
+  def getdir_all(dir: String, rev: Long): Either[ErrorResponse, List[GetdirResponse]]
 
-  def walk_all_!(glob:String, rev:Long): List[WalkResponse]
+  def walk_all_!(glob: String, rev: Long): List[WalkResponse]
 
-  def getdir_all_!(dir:String, rev:Long):List[GetdirResponse]
+  def getdir_all_!(dir: String, rev: Long): List[GetdirResponse]
 
   def watch(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Boolean)
 
@@ -100,24 +97,9 @@ trait DoozerClient {
 }
 
 object Flange {
-  lazy val simpleRegistry: SimpleRegistry = {
-    val reg = new SimpleRegistry
-    val decoders = new ArrayBuffer[ChannelUpstreamHandler]();
-    decoders += (new LengthFieldBasedFrameDecoder(1048576, 0, 4, 0, 4));
-    decoders += (new ProtobufDecoder(DoozerMsg.Response.getDefaultInstance));
-    val encoders = new ArrayBuffer[ChannelDownstreamHandler]();
-    encoders += (new LengthFieldPrepender(4));
-    encoders += (new ProtobufEncoder());
-    reg.put("encoders", bufferAsJavaList(encoders))
-    reg.put("decoders", bufferAsJavaList(decoders))
-    reg
-  }
-  lazy val camelService = CamelServiceFactory.createCamelService({
-    val ctx = new DefaultCamelContext(simpleRegistry)
-    ctx
-  }).start
 
-  def parseDoozerUri(doozerUri: String): List[String] = {
+
+  def parseDoozerUri(doozerUri: String): (List[String], String) = {
     """^doozer:\?(.*)$""".r.findFirstMatchIn(doozerUri) match {
       case Some(m@Regex.Match(_)) => {
         val doozerds = for {
@@ -125,7 +107,13 @@ object Flange {
           k <- caServer.split("=").headOption if k == "ca"
           v <- caServer.split("=").tail.headOption
         } yield v
-        doozerds
+        val sk = for {
+          sks <- m.group(1).split("&").toList
+          k <- sks.split("=").headOption if k == "sk"
+          v <- sks.split("=").tail.headOption
+        } yield v
+
+        (doozerds, sk.headOption.getOrElse(throw new IllegalArgumentException("Missing sk param")))
       }
       case _ => throw new IllegalArgumentException("cant parse doozerUri:" + doozerUri)
     }
@@ -139,12 +127,11 @@ class Flange(doozerUri: String) extends DoozerClient {
 
   import Flange._
 
-  private val doozerds = parseDoozerUri(doozerUri)
-  private val service = camelService
+  private val (doozerds, sk) = parseDoozerUri(doozerUri)
   private val supervisor = actorOf(new ConnectionSupervisor(doozerds.size)).start()
   private val connection = {
 
-    val state = new ClientState(doozerds.toIterable)
+    val state = new ClientState(sk, doozerds.toIterable)
     val conn = actorOf(new ConnectionActor(state))
     supervisor.startLink(conn)
     conn
@@ -163,15 +150,26 @@ class Flange(doozerUri: String) extends DoozerClient {
 
   private def retry[T](req: DoozerRequest)(success: PartialFunction[Any, Either[ErrorResponse, T]]): Either[ConnectionFailed, Either[ErrorResponse, T]] = {
     try {
-      val resp = connection !! req
+      val resp = connection.sendRequestReply(req,50000,null)
       if (success.isDefinedAt(resp)) Right(success(resp))
       else resp match {
-        case Some(e@ErrorResponse(_, _)) => Right(Left(e))
-        case Some(NoConnectionsLeft) => Right(noConnections)
+        case e@ErrorResponse(_, desc) if desc equals "permission denied" => {
+          connection !! AccessRequest(sk) match {
+            case Some(r: AccessResponse) => retry(req)(success)
+            case er@_ => {
+              EventHandler.error(er, "cant auth")
+              Left(ConnectionFailed())
+            }
+          }
+        }
+        case e@ErrorResponse(_, _) => Right(Left(e))
+        case NoConnectionsLeft => Right(noConnections)
         case None => Left(ConnectionFailed())
       }
     } catch {
-      case e => Left(ConnectionFailed())
+      case e =>
+        EventHandler.error(e,this,"error")
+        Left(ConnectionFailed())
     }
   }
 
@@ -213,7 +211,7 @@ class Flange(doozerUri: String) extends DoozerClient {
   }
 
   def delete(path: String, rev: Long) = complete[DeleteResponse](DeleteRequest(path, rev)) {
-    case Some(d@DeleteResponse(_)) => Right(d)
+    case d@DeleteResponse(_) => Right(d)
   }
 
   def setAsync(path: String, value: Array[Byte], rev: Long)(callback: (Either[ErrorResponse, SetResponse]) => Unit) {
@@ -228,20 +226,20 @@ class Flange(doozerUri: String) extends DoozerClient {
   }
 
   def set(path: String, value: Array[Byte], rev: Long) = complete[SetResponse](SetRequest(path, value, rev)) {
-    case Some(s@SetResponse(_)) => Right(s)
+    case s@SetResponse(_) => Right(s)
   }
 
-  def getAsync(path: String,rev:Long=0L)(callback: (Either[ErrorResponse, GetResponse]) => Unit) {
-    completeFuture[GetResponse](GetRequest(path,rev), callback) {
+  def getAsync(path: String, rev: Long = 0L)(callback: (Either[ErrorResponse, GetResponse]) => Unit) {
+    completeFuture[GetResponse](GetRequest(path, rev), callback) {
       case Some(Right(g@GetResponse(_, _))) => Right(g)
     }
   }
 
-  def get(path: String, rev:Long=0L): Either[ErrorResponse, GetResponse] = complete[GetResponse](GetRequest(path,rev)) {
-    case Some(g@GetResponse(_, _)) => Right(g)
+  def get(path: String, rev: Long = 0L): Either[ErrorResponse, GetResponse] = complete[GetResponse](GetRequest(path, rev)) {
+    case g@GetResponse(_, _) => Right(g)
   }
 
-  def get_!(path: String,rev:Long=0L) = get(path,rev) match {
+  def get_!(path: String, rev: Long = 0L) = get(path, rev) match {
     case Right(g@GetResponse(_, _)) => g
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
@@ -253,7 +251,7 @@ class Flange(doozerUri: String) extends DoozerClient {
   }
 
   def rev = complete[RevResponse](RevRequest) {
-    case Some(r@RevResponse(_)) => Right(r)
+    case r@RevResponse(_) => Right(r)
   }
 
   def rev_! = rev match {
@@ -268,7 +266,7 @@ class Flange(doozerUri: String) extends DoozerClient {
   }
 
   def wait(glob: String, rev: Long) = complete[WaitResponse](WaitRequest(glob, rev)) {
-    case Some(w@WaitResponse(_, _, _)) => Right(w)
+    case w@WaitResponse(_, _, _) => Right(w)
   }
 
   def wait_!(glob: String, rev: Long) = wait(glob, rev) match {
@@ -283,9 +281,8 @@ class Flange(doozerUri: String) extends DoozerClient {
   }
 
   def stat(path: String, rev: Long) = complete[StatResponse](StatRequest(path, rev)) {
-    case Some(s@StatResponse(_, _, _)) => Right(s)
+    case s@StatResponse(_, _, _) => Right(s)
   }
-
 
 
   def stat_!(path: String, rev: Long) = stat(path, rev) match {
@@ -293,70 +290,70 @@ class Flange(doozerUri: String) extends DoozerClient {
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
 
-  def getdir(dir: String, rev: Long, offset:Int) = complete[GetdirResponse](GetdirRequest(dir,rev,offset)){
-    case Some(g@GetdirResponse(_,_)) => Right(g)
+  def getdir(dir: String, rev: Long, offset: Int) = complete[GetdirResponse](GetdirRequest(dir, rev, offset)) {
+    case g@GetdirResponse(_, _) => Right(g)
   }
 
-  def getdir_!(dir: String, rev: Long, offset: Int) = getdir(dir,rev,offset) match {
-    case Right(g@GetdirResponse(_,_))=> g
-    case Left(e@ErrorResponse(_,_)) => throw new ErrorResponseException(e)
+  def getdir_!(dir: String, rev: Long, offset: Int) = getdir(dir, rev, offset) match {
+    case Right(g@GetdirResponse(_, _)) => g
+    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
 
   def getdirAsync(dir: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, GetdirResponse]) => Unit) = {
-    completeFuture[GetdirResponse](GetdirRequest(dir,rev,offset),callback){
-      case Some(Right(g@GetdirResponse(_,_))) => Right(g)
+    completeFuture[GetdirResponse](GetdirRequest(dir, rev, offset), callback) {
+      case Some(Right(g@GetdirResponse(_, _))) => Right(g)
     }
   }
 
-  def walk(glob: String, rev: Long, offset:Int) = complete[WalkResponse](WalkRequest(glob,rev,offset)){
-    case Some(w@WalkResponse(_,_,_)) => Right(w)
+  def walk(glob: String, rev: Long, offset: Int) = complete[WalkResponse](WalkRequest(glob, rev, offset)) {
+    case w@WalkResponse(_, _, _) => Right(w)
   }
 
-  def walk_!(glob: String, rev: Long, offset: Int) = walk(glob,rev,offset) match {
-    case Right(w@WalkResponse(_,_,_))=> w
-    case Left(e@ErrorResponse(_,_)) => throw new ErrorResponseException(e)
+  def walk_!(glob: String, rev: Long, offset: Int) = walk(glob, rev, offset) match {
+    case Right(w@WalkResponse(_, _, _)) => w
+    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
 
   def walkAsync(glob: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, WalkResponse]) => Unit) = {
-    completeFuture[WalkResponse](WalkRequest(glob,rev,offset),callback){
-      case Some(Right(w@WalkResponse(_,_,_))) => Right(w)
+    completeFuture[WalkResponse](WalkRequest(glob, rev, offset), callback) {
+      case Some(Right(w@WalkResponse(_, _, _))) => Right(w)
     }
   }
 
   def watch(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Boolean) = {
-    def inner(either:Either[ErrorResponse, WaitResponse]){
-        if(callback.apply(either)){
-          waitAsync(glob,rev+1)(inner(_))
-        }
+    def inner(either: Either[ErrorResponse, WaitResponse]) {
+      if (callback.apply(either)) {
+        waitAsync(glob, rev + 1)(inner(_))
+      }
     }
-    waitAsync(glob,rev)(inner(_))
+    waitAsync(glob, rev)(inner(_))
   }
 
   def getdir_all(dir: String, rev: Long) = {
-    all_internal[GetdirResponse](getdir(dir,rev,_),0,Nil)
+    all_internal[GetdirResponse](getdir(dir, rev, _), 0, Nil)
   }
 
   @tailrec
-  private def all_internal[T](func:Int => Either[ErrorResponse,T],offset:Int, responses:List[T]):Either[ErrorResponse,List[T]] ={
+  private def all_internal[T](func: Int => Either[ErrorResponse, T], offset: Int, responses: List[T]): Either[ErrorResponse, List[T]] = {
     func.apply(offset) match {
-      case Left(ErrorResponse(code,msg)) if code eq Err.RANGE.name() => Right(responses)
-      case Left(e@ErrorResponse(_,_)) => Left(e)
-      case Right(t:T)=> all_internal(func, offset+1, responses :+ t )
+      case Left(ErrorResponse(code, msg)) if code eq Err.RANGE.name() => Right(responses)
+      case Left(e@ErrorResponse(_, _)) => Left(e)
+      case Right(t: T) => all_internal(func, offset + 1, responses :+ t)
     }
   }
 
   def walk_all(glob: String, rev: Long) = {
-    all_internal[WalkResponse](walk(glob,rev,_),0,Nil)
+    all_internal[WalkResponse](walk(glob, rev, _), 0, Nil)
   }
 
-  def getdir_all_!(dir: String, rev: Long) = getdir_all(dir,rev) match {
+  def getdir_all_!(dir: String, rev: Long) = getdir_all(dir, rev) match {
     case Right(responses) => responses
-    case Left(e@ErrorResponse(_,_)) => throw new ErrorResponseException(e)
+    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
 
-  def walk_all_!(glob: String, rev: Long) = walk_all(glob,rev) match {
+  def walk_all_!(glob: String, rev: Long) = walk_all(glob, rev) match {
     case Right(responses) => responses
-    case Left(e@ErrorResponse(_,_)) => throw new ErrorResponseException(e)
+    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
 }
 
@@ -368,65 +365,95 @@ class ConnectionSupervisor(numHosts: Int) extends Actor {
   }
 }
 
-class ClientState(var hosts: Iterable[String], var tag: Int = 0)
+class ClientState(val secret: String, var hosts: Iterable[String], var tag: Int = 0)
 
 class ConnectionFailedException(val host: String, cause: Throwable) extends RuntimeException(cause)
 
 class ErrorResponseException(val resp: ErrorResponse) extends RuntimeException()
 
-class ConnectionActor(state: ClientState) extends Actor with Producer {
+import org.jboss.netty.bootstrap.ClientBootstrap
+import org.jboss.netty.channel.socket.nio.NioClientSocketChannelFactory
+import org.jboss.netty.channel.Channel
+import java.util.concurrent.Executors
+import java.net.InetSocketAddress
+
+
+class ConnectionActor(state: ClientState) extends Actor {
   self.lifeCycle = Permanent
 
-  private var host: String = null;
+  private var host: String = null
+  private var port: Int = 0
   private var requests = new HashMap[Int, DoozerRequest]
   private var responses = new HashMap[Int, Option[CompletableFuture[_]]]
-  val tagHeader = "doozer.tag"
+  private var connected = false
+  private var bootstrap:ClientBootstrap=null
+  private var handler:Handler=null
 
-  lazy val endpointUri = {
-    state.hosts.headOption match {
-      case Some(h) => {
-        host = h
-        state.hosts = state.hosts.tail
-        "netty:tcp://%s?encoders=#encoders&decoders=#decoders&disconnect=true".format(host)
-      }
-      case None => {
-        become(noConn(), false)
-        "direct://noConnections"
-      }
+
+
+  state.hosts.headOption match {
+    case Some(h) => {
+      host = h.split(":").apply(0)
+      port = h.split(":").apply(1).toInt
+      state.hosts = state.hosts.tail
+    }
+    case None => {
+      become(noConn(), false)
     }
   }
 
 
-  //override def oneway = true
+  //channel.close().awaitUninterruptibly();
+          // Shut down all thread pools to exix
+  //bootstrap.releaseExternalResources();
 
-  override def preRestartProducer(reason: Throwable) {
-    EventHandler.warning(this, "failed:" + endpointUri)
+
+  override def preRestart(reason: Throwable) {
+    EventHandler.warning(this, "failed:" + host + ":" + port)
   }
 
 
   override def postRestart(reason: Throwable) {
-    EventHandler.warning(this, "failTo:" + endpointUri)
+    EventHandler.warning(this, "failTo:"  + host + ":" + port)
   }
 
   private def noConn(): Receive = {
     case _ => self.reply(NoConnectionsLeft)
   }
 
-  private def doSend(req: DoozerRequest): Message = {
+  private def doSend(req: DoozerRequest):Unit = {
     val currentTag = state.tag
     state.tag += 1
     requests += currentTag -> req
     responses += currentTag -> self.senderFuture
-    Message(req.toBuilder.setTag(currentTag).build, Map(tagHeader -> currentTag))
+    if(!connected){
+      bootstrap = new ClientBootstrap(new NioClientSocketChannelFactory(
+          Executors.newCachedThreadPool(),
+          Executors.newCachedThreadPool()));
+      bootstrap.setPipelineFactory(new PipelineFactory());
+      bootstrap.setOption("tcpNoDelay", true)
+      bootstrap.setOption("keepAlive", true)
+        // Make a new connection.
+        val connectFuture =
+          bootstrap.connect(new InetSocketAddress(host, port));
+        // Wait until the connection is made successfully
+        connectFuture.awaitUninterruptibly()
+        var channel:Channel = null
+        if(connectFuture.isSuccess) channel = connectFuture.getChannel
+        else throw new IllegalStateException("Channel didnt connect")
+        // Get the handler instance to initiate the request.
+         handler =
+          channel.getPipeline().get(classOf[Handler])
+      handler.ref = self
+       connected = true
+    }
+    handler.send(req.toBuilder.setTag(currentTag).build)
   }
 
-  override protected def receiveBeforeProduce = {
+
+  override protected def receive = {
     case req: DoozerRequest => doSend(req)
-  }
-
-
-  override protected def receiveAfterProduce = {
-    case DoozerResponse(response) => {
+    case response: DoozerMsg.Response => {
       requests.remove(response.getTag) match {
         case Some(req) => {
           val msg = DoozerResponse.isOk(response) match {
@@ -442,9 +469,53 @@ class ConnectionActor(state: ClientState) extends Actor with Producer {
 
       }
     }
-    case Failure(why, h) if why.isInstanceOf[CamelExchangeException] => throw new ConnectionFailedException(host, why)
-    case Failure(why, h) => EventHandler.error(why, this, host)
+    case x:AnyRef=>{
+      EventHandler.info(this,x.getClass)
+    }
+
   }
+
+
+}
+
+import org.jboss.netty.channel._
+import akka.actor.ActorRef
+
+class Handler extends SimpleChannelUpstreamHandler {
+
+  @volatile var ref:ActorRef = null
+  @volatile var channel: Channel = null
+
+  def send(msg: DoozerMsg.Request) {
+    System.out.println("\n====>sent:"+msg.toString)
+    val future = channel.write(msg)
+    future.awaitUninterruptibly
+  }
+
+  override def messageReceived(ctx: ChannelHandlerContext, e: MessageEvent) {
+    System.out.print("\n===>recieved:"+e.getMessage)
+    ref ! e.getMessage
+  }
+
+  override def channelOpen(ctx: ChannelHandlerContext, e: ChannelStateEvent) {
+    channel = ctx.getChannel
+    super.channelOpen(ctx,e)
+  }
+}
+
+import org.jboss.netty.channel.ChannelPipelineFactory
+import org.jboss.netty.handler.codec.protobuf._
+
+class PipelineFactory extends ChannelPipelineFactory {
+  def getPipeline = {
+      val p = Channels.pipeline
+      p.addLast("frameDecoder", new LengthFieldBasedFrameDecoder(1048576, 0, 4, 0, 4))
+      p.addLast("protobufDecoder", new ProtobufDecoder(DoozerMsg.Response.getDefaultInstance()))
+      p.addLast("frameEncoder", new LengthFieldPrepender(4))
+      p.addLast("protobufEncoder", new ProtobufEncoder())
+      p.addLast("handler", new Handler)
+      p
+    }
 
 
 }
