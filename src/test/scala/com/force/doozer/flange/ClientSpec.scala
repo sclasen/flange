@@ -15,16 +15,16 @@ import com.force.doozer.flange.DoozerClient._
 class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with Waiting {
 
   var client: Flange = null
-  var uri = "doozer:?ca=localhost:8046&sk=secret"
+  var uri = "doozer:?ca=localhost:12345&ca=localhost:8046&sk=secret"
 
   "A Doozer Client" must {
     "set and get and stat and delete values correctly" in {
+      System.out.println("Exceptions are to be expected here as we purposely use a url with a host thats not up to test failover")
       (1 to 20) foreach {
         i => {
           val path = "/" + System.currentTimeMillis.toString
           val value = path + "--value"
           val response: SetResponse = client.set_!(path, value, 0L)
-          debug("set breakpoint here for failover")
           val getResponse: GetResponse = client.get_!(path)
           getResponse.value must be(value.getBytes)
           client.stat_!(path,getResponse.rev).length must be(getResponse.value.length)

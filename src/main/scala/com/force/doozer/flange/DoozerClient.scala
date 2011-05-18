@@ -11,12 +11,8 @@ import doozer.DoozerMsg
 import doozer.DoozerMsg.Response.Err
 import akka.actor.Actor._
 import akka.dispatch.Future
-import org.jboss.netty.channel.ChannelUpstreamHandler
-import org.jboss.netty.channel.ChannelDownstreamHandler
-import org.jboss.netty.handler.codec.protobuf.{ProtobufDecoder, ProtobufEncoder}
 import org.jboss.netty.handler.codec.frame.{LengthFieldBasedFrameDecoder, LengthFieldPrepender}
-import collection.JavaConversions._
-import collection.mutable.{HashMap, ArrayBuffer}
+import collection.mutable.HashMap
 import akka.dispatch.CompletableFuture
 import akka.config.Supervision._
 import annotation.tailrec
@@ -24,6 +20,9 @@ import util.matching.Regex
 
 import akka.event.EventHandler
 import akka.actor.{MaximumNumberOfRestartsWithinTimeRangeReached, Actor}
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.atomic.AtomicInteger
+import java.lang.{RuntimeException, Thread}
 
 
 object DoozerClient {
@@ -98,6 +97,14 @@ trait DoozerClient {
 
 object Flange {
 
+  lazy val daemonThreadFactory = new ThreadFactory {
+    val count = new AtomicInteger(0)
+    def newThread(r: Runnable) = {
+      val t = new Thread(r,"FlangeConnector:"+count.incrementAndGet())
+      t.setDaemon(true)
+      t
+    }
+  }
 
   def parseDoozerUri(doozerUri: String): (List[String], String) = {
     """^doozer:\?(.*)$""".r.findFirstMatchIn(doozerUri) match {
@@ -150,7 +157,7 @@ class Flange(doozerUri: String) extends DoozerClient {
 
   private def retry[T](req: DoozerRequest)(success: PartialFunction[Any, Either[ErrorResponse, T]]): Either[ConnectionFailed, Either[ErrorResponse, T]] = {
     try {
-      val resp = connection.sendRequestReply(req,50000,null)
+      val resp = connection.sendRequestReply(req, 50000, null)
       if (success.isDefinedAt(resp)) Right(success(resp))
       else resp match {
         case e@ErrorResponse(_, desc) if desc equals "permission denied" => {
@@ -168,7 +175,7 @@ class Flange(doozerUri: String) extends DoozerClient {
       }
     } catch {
       case e =>
-        EventHandler.error(e,this,"error")
+        EventHandler.error(e, this, "error")
         Left(ConnectionFailed())
     }
   }
@@ -181,6 +188,7 @@ class Flange(doozerUri: String) extends DoozerClient {
       case Left(fail) => complete[T](req)(success)
     }
   }
+
 
   private def completeFuture[T](req: DoozerRequest, responseCallback: (Either[ErrorResponse, T] => Unit))(success: PartialFunction[Any, Either[ErrorResponse, T]]) {
     val future: Future[_] = connection !!! req
@@ -321,12 +329,12 @@ class Flange(doozerUri: String) extends DoozerClient {
   }
 
   def watch(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Boolean) = {
-    def inner(either: Either[ErrorResponse, WaitResponse]) {
+    def inner(r:Long,either: Either[ErrorResponse, WaitResponse]) {
       if (callback.apply(either)) {
-        waitAsync(glob, rev + 1)(inner(_))
+        waitAsync(glob, r + 1)(inner(r+1,_))
       }
     }
-    waitAsync(glob, rev)(inner(_))
+    waitAsync(glob, rev)(inner(rev,_))
   }
 
   def getdir_all(dir: String, rev: Long) = {
@@ -376,6 +384,7 @@ import org.jboss.netty.channel.socket.nio.NioClientSocketChannelFactory
 import org.jboss.netty.channel.Channel
 import java.util.concurrent.Executors
 import java.net.InetSocketAddress
+import com.force.doozer.flange.Flange._
 
 
 class ConnectionActor(state: ClientState) extends Actor {
@@ -386,9 +395,9 @@ class ConnectionActor(state: ClientState) extends Actor {
   private var requests = new HashMap[Int, DoozerRequest]
   private var responses = new HashMap[Int, Option[CompletableFuture[_]]]
   private var connected = false
-  private var bootstrap:ClientBootstrap=null
-  private var handler:Handler=null
-
+  private var bootstrap: ClientBootstrap = null
+  private var handler: Handler = null
+  private var channel: Channel = null
 
 
   state.hosts.headOption match {
@@ -402,50 +411,71 @@ class ConnectionActor(state: ClientState) extends Actor {
     }
   }
 
+  private def notifyWaiters(ex:Throwable){
+      for{
+      futureOpt <- responses.values
+      future <- futureOpt
+    } future.completeWithException(ex)
+  }
 
-  //channel.close().awaitUninterruptibly();
-          // Shut down all thread pools to exix
-  //bootstrap.releaseExternalResources();
-
+  override def postStop() {
+    notifyWaiters(new RuntimeException("Connection actor was stopped"))
+  }
 
   override def preRestart(reason: Throwable) {
     EventHandler.warning(this, "failed:" + host + ":" + port)
+    try {
+      if (channel != null) channel.close()
+    }
+    catch {
+      case _ =>
+    }
+    try {
+      if (bootstrap != null) bootstrap.releaseExternalResources()
+    }
+    catch {
+      case _ =>
+    }
+    notifyWaiters(reason)
   }
 
 
   override def postRestart(reason: Throwable) {
-    EventHandler.warning(this, "failTo:"  + host + ":" + port)
+    EventHandler.warning(this, "failTo:" + host + ":" + port)
   }
 
   private def noConn(): Receive = {
     case _ => self.reply(NoConnectionsLeft)
   }
 
-  private def doSend(req: DoozerRequest):Unit = {
+  private def connect() {
+    bootstrap = new ClientBootstrap(new NioClientSocketChannelFactory(
+      Executors.newCachedThreadPool(daemonThreadFactory),
+      Executors.newCachedThreadPool(daemonThreadFactory)));
+    bootstrap.setPipelineFactory(new PipelineFactory());
+    bootstrap.setOption("tcpNoDelay", true)
+    bootstrap.setOption("keepAlive", true)
+    // Make a new connection.
+    val connectFuture =
+      bootstrap.connect(new InetSocketAddress(host, port));
+    // Wait until the connection is made successfully
+    connectFuture.awaitUninterruptibly()
+    if (connectFuture.isSuccess) channel = connectFuture.getChannel
+    else throw new IllegalStateException("Channel didnt connect")
+    // Get the handler instance to initiate the request.
+    handler =
+      channel.getPipeline().get(classOf[Handler])
+    handler.ref = self
+  }
+
+  private def doSend(req: DoozerRequest): Unit = {
     val currentTag = state.tag
     state.tag += 1
     requests += currentTag -> req
     responses += currentTag -> self.senderFuture
-    if(!connected){
-      bootstrap = new ClientBootstrap(new NioClientSocketChannelFactory(
-          Executors.newCachedThreadPool(),
-          Executors.newCachedThreadPool()));
-      bootstrap.setPipelineFactory(new PipelineFactory());
-      bootstrap.setOption("tcpNoDelay", true)
-      bootstrap.setOption("keepAlive", true)
-        // Make a new connection.
-        val connectFuture =
-          bootstrap.connect(new InetSocketAddress(host, port));
-        // Wait until the connection is made successfully
-        connectFuture.awaitUninterruptibly()
-        var channel:Channel = null
-        if(connectFuture.isSuccess) channel = connectFuture.getChannel
-        else throw new IllegalStateException("Channel didnt connect")
-        // Get the handler instance to initiate the request.
-         handler =
-          channel.getPipeline().get(classOf[Handler])
-      handler.ref = self
-       connected = true
+    if (!connected) {
+      connect()
+      connected = true
     }
     handler.send(req.toBuilder.setTag(currentTag).build)
   }
@@ -466,13 +496,8 @@ class ConnectionActor(state: ClientState) extends Actor {
           }
         }
         case None => EventHandler.warning(this, "Revieved a response with tag %d but there was no request to correlate with".format(response.getTag))
-
       }
     }
-    case x:AnyRef=>{
-      EventHandler.info(this,x.getClass)
-    }
-
   }
 
 
@@ -483,23 +508,28 @@ import akka.actor.ActorRef
 
 class Handler extends SimpleChannelUpstreamHandler {
 
-  @volatile var ref:ActorRef = null
+  @volatile var ref: ActorRef = null
   @volatile var channel: Channel = null
 
   def send(msg: DoozerMsg.Request) {
-    System.out.println("\n====>sent:"+msg.toString)
+    EventHandler.debug(this,"====>sent:" + msg.toString)
     val future = channel.write(msg)
     future.awaitUninterruptibly
   }
 
+
+  override def exceptionCaught(ctx: ChannelHandlerContext, e: ExceptionEvent) {
+    EventHandler.error(e.getCause,this,"exceptionCaught")
+  }
+
   override def messageReceived(ctx: ChannelHandlerContext, e: MessageEvent) {
-    System.out.print("\n===>recieved:"+e.getMessage)
+    EventHandler.debug(this, "===>recieved:" + e.getMessage)
     ref ! e.getMessage
   }
 
   override def channelOpen(ctx: ChannelHandlerContext, e: ChannelStateEvent) {
     channel = ctx.getChannel
-    super.channelOpen(ctx,e)
+    super.channelOpen(ctx, e)
   }
 }
 
@@ -508,14 +538,14 @@ import org.jboss.netty.handler.codec.protobuf._
 
 class PipelineFactory extends ChannelPipelineFactory {
   def getPipeline = {
-      val p = Channels.pipeline
-      p.addLast("frameDecoder", new LengthFieldBasedFrameDecoder(1048576, 0, 4, 0, 4))
-      p.addLast("protobufDecoder", new ProtobufDecoder(DoozerMsg.Response.getDefaultInstance()))
-      p.addLast("frameEncoder", new LengthFieldPrepender(4))
-      p.addLast("protobufEncoder", new ProtobufEncoder())
-      p.addLast("handler", new Handler)
-      p
-    }
+    val p = Channels.pipeline
+    p.addLast("frameDecoder", new LengthFieldBasedFrameDecoder(1048576, 0, 4, 0, 4))
+    p.addLast("protobufDecoder", new ProtobufDecoder(DoozerMsg.Response.getDefaultInstance()))
+    p.addLast("frameEncoder", new LengthFieldPrepender(4))
+    p.addLast("protobufEncoder", new ProtobufEncoder())
+    p.addLast("handler", new Handler)
+    p
+  }
 
 
 }
