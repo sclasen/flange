@@ -46,4 +46,4 @@ multiverse.log
 .eprj
 .*.swp
 akka-tutorials/akka-tutorial-pi-sbt/project/boot/
-doozer-0.5/dooz.log
+doozer-*/dooz.log
