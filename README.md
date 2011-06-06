@@ -35,5 +35,31 @@
 
 ##Failover
 
-The Flange client will failover to each of the doozer servers specified in the doozerURI when an operation fails. The failing operation
+The Flange client will by default will failover to each of the doozer servers specified in the doozerURI when an operation fails. The failing operation
 is transparently retried. Once all of the doozer servers have failed the client is dead.
+
+This behavior is pluggable. You simply need to supply a function of List[String] => Iterable[String] when constructing a Flange instance
+that will be passed the list of doozerd hosts parsed from the doozer URI.
+
+The Flange companion object defines 2 of these functions, eachDoozerOnceStrategy and retryForeverStrategy. The default is eachDoozerOnceStrategy
+
+To use the retryForeverStrategy
+
+    import com.force.doozer.flange.Flange
+    import com.force.doozer.flange.Flange._
+
+    val doozerUri = ...
+    val flange = new Flange(doozerUri, retryForeverStrategy)
+
+
+To use your own
+
+    import com.force.doozer.flange.Flange
+
+    val funk: List[String]=>Iterable[String] = {doozerds:List[String]=>...}
+    val doozerUri = ...
+    val flange = new Flange(doozerUri, funk)
+
+
+
+
