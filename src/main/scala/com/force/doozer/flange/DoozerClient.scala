@@ -499,7 +499,7 @@ class ConnectionActor(state: ClientState) extends Actor {
             case true => req.toResponse(response)
             case false => req.toError(response)
           }
-          responses.get(response.getTag) match {
+          responses.remove(response.getTag) match {
             case Some(future) => future.get.asInstanceOf[CompletableFuture[Any]].completeWithResult(msg)
             case None => EventHandler.warning(this, "Received a response with tag %d but there was no futute to complete".format(response.getTag))
           }
