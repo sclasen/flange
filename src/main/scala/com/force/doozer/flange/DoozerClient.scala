@@ -126,19 +126,19 @@ object Flange {
     }
   }
 
-  def eachDoozerOnceStrategy(doozerds:List[String]):Iterable[String]={
+  def eachDoozerOnceStrategy(doozerds: List[String]): Iterable[String] = {
     doozerds.toIterable
   }
 
-  def retryForeverStrategy(doozerds:List[String]):Iterable[String]={
+  def retryForeverStrategy(doozerds: List[String]): Iterable[String] = {
     var cur = doozerds
-    Stream.continually{
+    Stream.continually {
       cur.headOption match {
-        case Some(doozer)=>{
+        case Some(doozer) => {
           cur = cur.tail
           doozer
         }
-        case None =>{
+        case None => {
           cur = doozerds.tail
           doozerds.head
         }
@@ -148,16 +148,17 @@ object Flange {
 
   val allConnectionsFailed = "ALL_CONNECTIONS_FAILED"
 }
+
+
 import Flange._
-class Flange(doozerUri: String, strategy: List[String]=>Iterable[String] = eachDoozerOnceStrategy) extends DoozerClient {
 
 
+class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[String] = eachDoozerOnceStrategy) extends DoozerClient {
 
   private val (doozerds, sk) = parseDoozerUri(doozerUri)
   private val supervisor = actorOf(new ConnectionSupervisor(doozerds.size)).start()
   private val connection = {
-
-    val state = new ClientState(sk, strategy(doozerds))
+    val state = new ClientState(sk, failoverStrategy(doozerds))
     val conn = actorOf(new ConnectionActor(state))
     supervisor.startLink(conn)
     conn
@@ -221,7 +222,7 @@ class Flange(doozerUri: String, strategy: List[String]=>Iterable[String] = eachD
                 case Some(r: AccessResponse) => retry(req)(success)
                 case er@_ => {
                   EventHandler.error(er, "cant auth")
-                  Left(ConnectionFailed())
+                  responseCallback(Left(e))
                 }
               }
             }
