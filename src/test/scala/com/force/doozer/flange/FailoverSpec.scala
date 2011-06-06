@@ -18,7 +18,7 @@ class FailoverSpec extends WordSpec with MustMatchers with BeforeAndAfterAll wit
 
   "A Doozer DoozerClient" must {
     "fail over properly when no servers are up" in {
-      val clientWithNoServersUp = new Flange("doozer:?ca=localhost:12321&ca=localhost:12322")
+      val clientWithNoServersUp = new Flange("doozer:?ca=localhost:12321&ca=localhost:12322&sk=foo")
       try {
         clientWithNoServersUp.set("/nothome", "avalue".getBytes, 0L) match {
           case Left(ErrorResponse(err, _)) => err must be(Flange.allConnectionsFailed)

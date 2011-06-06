@@ -10,8 +10,6 @@ import doozer.DoozerMsg
 import doozer.DoozerMsg.Request.Verb
 import com.google.protobuf.ByteString
 import doozer.DoozerMsg.Response.Err
-import doozer.DoozerMsg.Response
-
 object DoozerRequest {
 
 }
@@ -23,7 +21,7 @@ object DoozerResponse {
   val set = 4
   val del = 8
 
-  def isOk(msg: DoozerMsg.Response): Boolean = msg.getErrCode == null  || (msg.getErrCode == Err.OTHER &&( msg.getErrDetail eq  ""))
+  def isOk(msg: DoozerMsg.Response): Boolean = msg.getErrCode == null || (msg.getErrCode == Err.OTHER && (msg.getErrDetail eq ""))
 }
 
 sealed trait DoozerRequest {
@@ -37,15 +35,17 @@ sealed trait DoozerRequest {
 
   def toError(res: DoozerMsg.Response): ErrorResponse = ErrorResponse(res.getErrCode.name, res.getErrDetail)
 
+  def timeout = 5000L
+
 }
 
 case class ErrorResponse(code: String, description: String)
 
-case class AccessRequest(secret:String) extends DoozerRequest{
+case class AccessRequest(secret: String) extends DoozerRequest {
   type Response = AccessResponse
   lazy val toBuilder = builder.setVerb(Verb.ACCESS).setValue(ByteString.copyFromUtf8(secret))
 
-  def toResponse(res: DoozerMsg.Response) :AccessResponse = AccessResponse()
+  def toResponse(res: DoozerMsg.Response): AccessResponse = AccessResponse()
 }
 
 case class AccessResponse()
@@ -90,11 +90,13 @@ case class DeleteRequest(path: String, rev: Long) extends DoozerRequest {
   def toResponse(res: DoozerMsg.Response): DeleteResponse = DeleteResponse(res.getPath)
 }
 
-case class WaitRequest(glob: String, rev: Long) extends DoozerRequest {
+case class WaitRequest(glob: String, rev: Long, maxWait: Long = Long.MaxValue) extends DoozerRequest {
   type Response = WaitResponse
   lazy val toBuilder = builder.setVerb(Verb.WAIT).setPath(glob).setRev(rev)
 
   def toResponse(res: DoozerMsg.Response): WaitResponse = WaitResponse(res.getPath, res.getValue.toByteArray, res.getRev)
+
+  override def timeout = maxWait
 }
 
 case class WaitResponse(path: String, value: Array[Byte], rev: Long)
@@ -120,14 +122,14 @@ case class GetdirRequest(dir: String, rev: Long, offset: Int = 0) extends Doozer
 
 case class GetdirResponse(path: String, rev: Long)
 
-case class WalkRequest(path: String, rev: Long, offset:Int=0) extends DoozerRequest {
+case class WalkRequest(path: String, rev: Long, offset: Int = 0) extends DoozerRequest {
   type Response = WalkResponse
   lazy val toBuilder = builder.setVerb(Verb.WALK).setPath(path).setRev(rev).setOffset(offset)
 
   def toResponse(res: DoozerMsg.Response): WalkResponse = WalkResponse(res.getPath, res.getValue.toByteArray, res.getRev)
 }
 
-case class WalkResponse(path: String, value:Array[Byte], rev: Long)
+case class WalkResponse(path: String, value: Array[Byte], rev: Long)
 
 case class DeleteResponse(path: String)
 

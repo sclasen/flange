@@ -57,12 +57,11 @@ trait DoozerClient {
 
   def revAsync(callback: (Either[ErrorResponse, RevResponse] => Unit))
 
-  //TODO support arbitrarily long waits, will timeout after default akka timeout currently
-  def wait_!(glob: String, rev: Long): WaitResponse
+  def wait_!(glob: String, rev: Long, waitFor: Long = Long.MaxValue): WaitResponse
 
-  def wait(glob: String, rev: Long): Either[ErrorResponse, WaitResponse]
+  def wait(glob: String, rev: Long, waitFor: Long = Long.MaxValue): Either[ErrorResponse, WaitResponse]
 
-  def waitAsync(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Unit)
+  def waitAsync(glob: String, rev: Long, waitFor: Long = Long.MaxValue)(callback: (Either[ErrorResponse, WaitResponse]) => Unit)
 
   def stat_!(path: String, rev: Long): StatResponse
 
@@ -90,7 +89,7 @@ trait DoozerClient {
 
   def getdir_all_!(dir: String, rev: Long): List[GetdirResponse]
 
-  def watch(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Boolean)
+  def watch(glob: String, rev: Long, watchFor: Long = Long.MaxValue)(callback: (Either[ErrorResponse, WaitResponse]) => Boolean)
 
 
 }
@@ -99,8 +98,9 @@ object Flange {
 
   lazy val daemonThreadFactory = new ThreadFactory {
     val count = new AtomicInteger(0)
+
     def newThread(r: Runnable) = {
-      val t = new Thread(r,"FlangeConnector:"+count.incrementAndGet())
+      val t = new Thread(r, "FlangeConnector:" + count.incrementAndGet())
       t.setDaemon(true)
       t
     }
@@ -157,10 +157,10 @@ class Flange(doozerUri: String) extends DoozerClient {
 
   private def retry[T](req: DoozerRequest)(success: PartialFunction[Any, Either[ErrorResponse, T]]): Either[ConnectionFailed, Either[ErrorResponse, T]] = {
     try {
-      val resp = connection.sendRequestReply(req, 50000, null)
-      if (success.isDefinedAt(resp)) Right(success(resp))
+      val resp = connection !! (req, req.timeout)
+      if (resp.isDefined && success.isDefinedAt(resp.get)) Right(success(resp.get))
       else resp match {
-        case e@ErrorResponse(_, desc) if desc equals "permission denied" => {
+        case Some(e@ErrorResponse(_, desc)) if desc equals "permission denied" => {
           connection !! AccessRequest(sk) match {
             case Some(r: AccessResponse) => retry(req)(success)
             case er@_ => {
@@ -169,8 +169,8 @@ class Flange(doozerUri: String) extends DoozerClient {
             }
           }
         }
-        case e@ErrorResponse(_, _) => Right(Left(e))
-        case NoConnectionsLeft => Right(noConnections)
+        case Some(e@ErrorResponse(_, _)) => Right(Left(e))
+        case Some(NoConnectionsLeft) => Right(noConnections)
         case None => Left(ConnectionFailed())
       }
     } catch {
@@ -191,12 +191,21 @@ class Flange(doozerUri: String) extends DoozerClient {
 
 
   private def completeFuture[T](req: DoozerRequest, responseCallback: (Either[ErrorResponse, T] => Unit))(success: PartialFunction[Any, Either[ErrorResponse, T]]) {
-    val future: Future[_] = connection !!! req
+    val future: Future[_] = connection !!! (req, req.timeout)
     future.asInstanceOf[Future[T]].onComplete {
       f: Future[T] =>
         if (success.isDefinedAt(f.value)) responseCallback(success(f.value))
         else {
           f.value match {
+            case Some(Right(e@ErrorResponse(_, desc))) if desc equals "permission denied" => {
+              connection !! AccessRequest(sk) match {
+                case Some(r: AccessResponse) => retry(req)(success)
+                case er@_ => {
+                  EventHandler.error(er, "cant auth")
+                  Left(ConnectionFailed())
+                }
+              }
+            }
             case Some(Right(e@ErrorResponse(_, _))) => responseCallback(Left(e))
             case Some(Right(NoConnectionsLeft)) => responseCallback(noConnections)
             case _ => completeFuture(req, responseCallback)(success)
@@ -267,17 +276,17 @@ class Flange(doozerUri: String) extends DoozerClient {
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
 
-  def waitAsync(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Unit) = {
-    completeFuture[WaitResponse](WaitRequest(glob, rev), callback) {
+  def waitAsync(glob: String, rev: Long, waitFor: Long = Long.MaxValue)(callback: (Either[ErrorResponse, WaitResponse]) => Unit) = {
+    completeFuture[WaitResponse](WaitRequest(glob, rev, waitFor), callback) {
       case Some(Right(w@WaitResponse(_, _, _))) => Right(w)
     }
   }
 
-  def wait(glob: String, rev: Long) = complete[WaitResponse](WaitRequest(glob, rev)) {
+  def wait(glob: String, rev: Long, waitFor: Long = Long.MaxValue) = complete[WaitResponse](WaitRequest(glob, rev, waitFor)) {
     case w@WaitResponse(_, _, _) => Right(w)
   }
 
-  def wait_!(glob: String, rev: Long) = wait(glob, rev) match {
+  def wait_!(glob: String, rev: Long, waitFor: Long = Long.MaxValue) = wait(glob, rev, waitFor) match {
     case Right(w@WaitResponse(_, _, _)) => w
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
@@ -328,13 +337,13 @@ class Flange(doozerUri: String) extends DoozerClient {
     }
   }
 
-  def watch(glob: String, rev: Long)(callback: (Either[ErrorResponse, WaitResponse]) => Boolean) = {
-    def inner(r:Long,either: Either[ErrorResponse, WaitResponse]) {
+  def watch(glob: String, rev: Long, waitFor: Long = Long.MaxValue)(callback: (Either[ErrorResponse, WaitResponse]) => Boolean) = {
+    def inner(r: Long, either: Either[ErrorResponse, WaitResponse]) {
       if (callback.apply(either)) {
-        waitAsync(glob, r + 1)(inner(r+1,_))
+        waitAsync(glob, r + 1, waitFor)(inner(r + 1, _))
       }
     }
-    waitAsync(glob, rev)(inner(rev,_))
+    waitAsync(glob, rev, waitFor)(inner(rev, _))
   }
 
   def getdir_all(dir: String, rev: Long) = {
@@ -411,8 +420,8 @@ class ConnectionActor(state: ClientState) extends Actor {
     }
   }
 
-  private def notifyWaiters(ex:Throwable){
-      for{
+  private def notifyWaiters(ex: Throwable) {
+    for {
       futureOpt <- responses.values
       future <- futureOpt
     } future.completeWithException(ex)
@@ -512,14 +521,14 @@ class Handler extends SimpleChannelUpstreamHandler {
   @volatile var channel: Channel = null
 
   def send(msg: DoozerMsg.Request) {
-    EventHandler.debug(this,"====>sent:" + msg.toString)
+    EventHandler.debug(this, "====>sent:" + msg.toString)
     val future = channel.write(msg)
     future.awaitUninterruptibly
   }
 
 
   override def exceptionCaught(ctx: ChannelHandlerContext, e: ExceptionEvent) {
-    EventHandler.error(e.getCause,this,"exceptionCaught")
+    EventHandler.error(e.getCause, this, "exceptionCaught")
   }
 
   override def messageReceived(ctx: ChannelHandlerContext, e: MessageEvent) {
