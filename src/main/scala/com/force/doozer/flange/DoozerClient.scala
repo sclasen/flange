@@ -126,19 +126,38 @@ object Flange {
     }
   }
 
+  def eachDoozerOnceStrategy(doozerds:List[String]):Iterable[String]={
+    doozerds.toIterable
+  }
+
+  def retryForeverStrategy(doozerds:List[String]):Iterable[String]={
+    var cur = doozerds
+    Stream.continually{
+      cur.headOption match {
+        case Some(doozer)=>{
+          cur = cur.tail
+          doozer
+        }
+        case None =>{
+          cur = doozerds.tail
+          doozerds.head
+        }
+      }
+    }
+  }
 
   val allConnectionsFailed = "ALL_CONNECTIONS_FAILED"
 }
+import Flange._
+class Flange(doozerUri: String, strategy: List[String]=>Iterable[String] = eachDoozerOnceStrategy) extends DoozerClient {
 
-class Flange(doozerUri: String) extends DoozerClient {
 
-  import Flange._
 
   private val (doozerds, sk) = parseDoozerUri(doozerUri)
   private val supervisor = actorOf(new ConnectionSupervisor(doozerds.size)).start()
   private val connection = {
 
-    val state = new ClientState(sk, doozerds.toIterable)
+    val state = new ClientState(sk, strategy(doozerds))
     val conn = actorOf(new ConnectionActor(state))
     supervisor.startLink(conn)
     conn
