@@ -360,7 +360,10 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
   def watch(glob: String, rev: Long, waitFor: Long = Long.MaxValue)(callback: (Either[ErrorResponse, WaitResponse]) => Boolean) = {
     def inner(r: Long, either: Either[ErrorResponse, WaitResponse]) {
       if (callback.apply(either)) {
-        waitAsync(glob, r + 1, waitFor)(inner(r + 1, _))
+        either match {
+          case Left(_) =>  waitAsync(glob, r , waitFor)(inner(r , _))
+          case Right(WaitResponse(_,_,newRev)) => waitAsync(glob, newRev+1 , waitFor)(inner(newRev+1 , _))
+        }
       }
     }
     waitAsync(glob, rev, waitFor)(inner(rev, _))
