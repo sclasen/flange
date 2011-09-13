@@ -1,4 +1,4 @@
-package com.force.doozer.flange
+package com.heroku.doozer.flange
 
 /*
  * Created by IntelliJ IDEA.

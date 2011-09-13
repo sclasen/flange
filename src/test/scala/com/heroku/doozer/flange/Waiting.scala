@@ -4,7 +4,7 @@
  * Date: 4/25/11
  * Time: 2:01 PM
  */
-package com.force.doozer.flange
+package com.heroku.doozer.flange
 
 import java.util.concurrent.{TimeUnit, CountDownLatch}
 

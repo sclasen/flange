@@ -4,13 +4,13 @@
  * Date: 4/23/11
  * Time: 12:14 PM
  */
-package com.force.doozer.flange
+package com.heroku.doozer.flange
 
 import org.scalatest.WordSpec
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.MustMatchers
 import akka.actor.Actor._
-import com.force.doozer.flange.DoozerClient._
+import com.heroku.doozer.flange.DoozerClient._
 
 class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with Waiting {
 

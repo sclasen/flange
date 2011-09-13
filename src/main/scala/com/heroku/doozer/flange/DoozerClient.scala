@@ -5,7 +5,7 @@
  * Time: 4:12 PM
  */
 
-package com.force.doozer.flange
+package com.heroku.doozer.flange
 
 import doozer.DoozerMsg
 import doozer.DoozerMsg.Response.Err
@@ -416,7 +416,7 @@ import org.jboss.netty.channel.socket.nio.NioClientSocketChannelFactory
 import org.jboss.netty.channel.Channel
 import java.util.concurrent.Executors
 import java.net.InetSocketAddress
-import com.force.doozer.flange.Flange._
+import com.heroku.doozer.flange.Flange._
 
 
 class ConnectionActor(state: ClientState) extends Actor {

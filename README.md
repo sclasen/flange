@@ -10,8 +10,8 @@
     ./startDoozer.sh
     sbt console
 
-    import com.force.doozer.flange.Flange
-    import com.force.doozer.flange.{GetResponse,SetResponse,ErrorResponse,WatchNotification,WatchResponse}
+    import com.heroku.doozer.flange.Flange
+    import com.heroku.doozer.flange.{GetResponse,SetResponse,ErrorResponse,WatchNotification,WatchResponse}
 
     val client = new Flange("doozer:?ca=localhost:8046&ca=localhost:8047&ca=localhost:8048")
 
@@ -45,8 +45,8 @@ The Flange companion object defines 2 of these functions, eachDoozerOnceStrategy
 
 To use the retryForeverStrategy
 
-    import com.force.doozer.flange.Flange
-    import com.force.doozer.flange.Flange._
+    import com.heroku.doozer.flange.Flange
+    import com.heroku.doozer.flange.Flange._
 
     val doozerUri = ...
     val flange = new Flange(doozerUri, retryForeverStrategy)
@@ -54,7 +54,7 @@ To use the retryForeverStrategy
 
 To use your own
 
-    import com.force.doozer.flange.Flange
+    import com.heroku.doozer.flange.Flange
 
     val funk: List[String]=>Iterable[String] = {doozerds:List[String]=>...}
     val doozerUri = ...

@@ -4,7 +4,7 @@
  * Date: 4/22/11
  * Time: 2:57 PM
  */
-package com.force.doozer.flange
+package com.heroku.doozer.flange
 
 import doozer.DoozerMsg
 import doozer.DoozerMsg.Request.Verb

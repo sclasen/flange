@@ -4,7 +4,7 @@
  * Date: 4/21/11
  * Time: 9:36 PM
  */
-package com.force.doozer.flange
+package com.heroku.doozer.flange
 
 import org.scalatest.WordSpec
 import org.scalatest.matchers.MustMatchers
