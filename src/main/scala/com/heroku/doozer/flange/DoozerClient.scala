@@ -9,20 +9,20 @@ package com.heroku.doozer.flange
 
 import doozer.DoozerMsg
 import doozer.DoozerMsg.Response.Err
+import akka.actor.Props
 import akka.actor.Actor._
-import akka.dispatch.Future
+import akka.dispatch.{Future, Promise}
 import org.jboss.netty.handler.codec.frame.{LengthFieldBasedFrameDecoder, LengthFieldPrepender}
 import collection.mutable.HashMap
-import akka.dispatch.CompletableFuture
 import akka.config.Supervision._
 import annotation.tailrec
 import util.matching.Regex
 
 import akka.event.EventHandler
-import akka.actor.{MaximumNumberOfRestartsWithinTimeRangeReached, Actor}
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicInteger
 import java.lang.{RuntimeException, Thread}
+import akka.actor.{UntypedChannel, MaximumNumberOfRestartsWithinTimeRangeReached, Actor}
 
 
 object DoozerClient {
@@ -156,11 +156,11 @@ import Flange._
 class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[String] = eachDoozerOnceStrategy) extends DoozerClient {
 
   private val (doozerds, sk) = parseDoozerUri(doozerUri)
-  private val supervisor = actorOf(new ConnectionSupervisor(doozerds.size)).start()
+  private val supervisor = actorOf(Props(creator = () => new ConnectionSupervisor, faultHandler = OneForOneStrategy(List(classOf[Exception]), doozerds.size, doozerds.size * 1000)))
   private val connection = {
     val state = new ClientState(sk, failoverStrategy(doozerds))
-    val conn = actorOf(new ConnectionActor(state))
-    supervisor.startLink(conn)
+    val conn = actorOf(Props(creator = () => new ConnectionActor(state), lifeCycle = Permanent))
+    supervisor.link(conn)
     conn
   }
 
@@ -177,16 +177,17 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   private def retry[T](req: DoozerRequest)(success: PartialFunction[Any, Either[ErrorResponse, T]]): Either[ConnectionFailed, Either[ErrorResponse, T]] = {
     try {
-      val resp = connection !! (req, req.timeout)
+      val resp = (connection ? (req, req.timeout) ).as[Any]
       if (resp.isDefined && success.isDefinedAt(resp.get)) Right(success(resp.get))
       else resp match {
         case Some(e@ErrorResponse(_, desc)) if desc equals "permission denied" => {
-          connection !! AccessRequest(sk) match {
+          (connection ? AccessRequest(sk)).as[Any] match {
             case Some(r: AccessResponse) => retry(req)(success)
-            case er@_ => {
+            case Some(er:ErrorResponse) => {
               EventHandler.error(er, "cant auth")
               Left(ConnectionFailed())
             }
+            case None => Left(ConnectionFailed())
           }
         }
         case Some(e@ErrorResponse(_, _)) => Right(Left(e))
@@ -211,19 +212,20 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
 
   private def completeFuture[T](req: DoozerRequest, responseCallback: (Either[ErrorResponse, T] => Unit))(success: PartialFunction[Any, Either[ErrorResponse, T]]) {
-    val future: Future[_] = connection !!! (req, req.timeout)
+    val future: Future[_] = connection ? (req, req.timeout)
     future.asInstanceOf[Future[T]].onComplete {
       f: Future[T] =>
         if (success.isDefinedAt(f.value)) responseCallback(success(f.value))
         else {
           f.value match {
             case Some(Right(e@ErrorResponse(_, desc))) if desc equals "permission denied" => {
-              connection !! AccessRequest(sk) match {
+              (connection ? AccessRequest(sk)).as[Any] match {
                 case Some(r: AccessResponse) => retry(req)(success)
-                case er@_ => {
+                case Some(er:ErrorResponse) => {
                   EventHandler.error(er, "cant auth")
                   responseCallback(Left(e))
                 }
+                case None => completeFuture(req,responseCallback)(success) //todo test for correctness
               }
             }
             case Some(Right(e@ErrorResponse(_, _))) => responseCallback(Left(e))
@@ -397,8 +399,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
   }
 }
 
-class ConnectionSupervisor(numHosts: Int) extends Actor {
-  self.faultHandler = OneForOneStrategy(List(classOf[Exception]), numHosts, numHosts * 1000)
+class ConnectionSupervisor extends Actor {
 
   protected def receive = {
     case MaximumNumberOfRestartsWithinTimeRangeReached(_, _, _, ex) => EventHandler.error(ex, this, "Too Many Restarts")
@@ -420,12 +421,11 @@ import com.heroku.doozer.flange.Flange._
 
 
 class ConnectionActor(state: ClientState) extends Actor {
-  self.lifeCycle = Permanent
 
   private var host: String = null
   private var port: Int = 0
   private var requests = new HashMap[Int, DoozerRequest]
-  private var responses = new HashMap[Int, Option[CompletableFuture[_]]]
+  private var responses = new HashMap[Int, UntypedChannel]
   private var connected = false
   private var bootstrap: ClientBootstrap = null
   private var handler: Handler = null
@@ -445,16 +445,15 @@ class ConnectionActor(state: ClientState) extends Actor {
 
   private def notifyWaiters(ex: Throwable) {
     for {
-      futureOpt <- responses.values
-      future <- futureOpt
-    } future.completeWithException(ex)
+      channel <- responses.values
+    } channel.sendException(ex)
   }
 
   override def postStop() {
     notifyWaiters(new RuntimeException("Connection actor was stopped"))
   }
 
-  override def preRestart(reason: Throwable) {
+  override def preRestart(reason: Throwable, message : Option[Any]) {
     EventHandler.warning(this, "failed:" + host + ":" + port)
     try {
       if (channel != null) channel.close()
@@ -504,7 +503,7 @@ class ConnectionActor(state: ClientState) extends Actor {
     val currentTag = state.tag
     state.tag += 1
     requests += currentTag -> req
-    responses += currentTag -> self.senderFuture
+    responses += currentTag -> self.channel
     if (!connected) {
       connect()
       connected = true
@@ -523,7 +522,7 @@ class ConnectionActor(state: ClientState) extends Actor {
             case false => req.toError(response)
           }
           responses.remove(response.getTag) match {
-            case Some(future) => future.get.asInstanceOf[CompletableFuture[Any]].completeWithResult(msg)
+            case Some(channel) => channel ! msg
             case None => EventHandler.warning(this, "Received a response with tag %d but there was no futute to complete".format(response.getTag))
           }
         }

@@ -199,6 +199,6 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
   }
 
   override protected def afterAll() {
-    registry.shutdownAll()
+    //registry.local.shutdownAll()
   }
 }

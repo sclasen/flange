@@ -9,7 +9,7 @@ package com.heroku.doozer.flange
 
 import org.scalatest.matchers.MustMatchers
 import org.scalatest.{BeforeAndAfterAll, WordSpec}
-import akka.actor.Actor
+import akka.actor.Actor._
 
 class FailoverSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with Waiting {
 
@@ -37,7 +37,7 @@ class FailoverSpec extends WordSpec with MustMatchers with BeforeAndAfterAll wit
               signalAsyncDone()
             }
         }
-        waitForAsync()
+        waitForAsync(1000)
       } catch {
         case e => {
           signalAsyncDone()
@@ -45,15 +45,14 @@ class FailoverSpec extends WordSpec with MustMatchers with BeforeAndAfterAll wit
         }
       } finally {
         clientWithNoServersUp.stop
-        stop()
       }
     }
 
 
   }
 
-  def stop() {
-    Actor.registry.shutdownAll()
+  override protected def afterAll(){
+    //registry.local.shutdownAll()
   }
 
 }
