@@ -563,8 +563,7 @@ class NettyProtobufConnector extends NettyConnector{
      bootstrap = new ClientBootstrap(new NioClientSocketChannelFactory(
       Executors.newCachedThreadPool(daemonThreadFactory),
       Executors.newCachedThreadPool(daemonThreadFactory)));
-    _handler = new Handler
-    _handler.ref = self
+    _handler = new Handler(self)
     bootstrap.setPipelineFactory(new PipelineFactory(_handler));
     bootstrap.setOption("tcpNoDelay", true)
     bootstrap.setOption("keepAlive", true)
@@ -585,13 +584,12 @@ class NettyProtobufConnector extends NettyConnector{
 import org.jboss.netty.channel._
 import akka.actor.ActorRef
 
-class Handler extends SimpleChannelUpstreamHandler {
+class Handler(ref:ActorRef) extends SimpleChannelUpstreamHandler {
 
-  @volatile var ref: ActorRef = null
   @volatile var channel: Channel = null
 
   def send(msg: DoozerMsg.Request) {
-    EventHandler.debug(this, "====>sent:" + msg.toString)
+    EventHandler.debug(this, "%s====>sent:%s".format(ref.address, msg.toString))
     val future = channel.write(msg)
     future.awaitUninterruptibly
   }
@@ -602,7 +600,7 @@ class Handler extends SimpleChannelUpstreamHandler {
   }
 
   override def messageReceived(ctx: ChannelHandlerContext, e: MessageEvent) {
-    EventHandler.debug(this, "===>recieved:" + e.getMessage)
+    EventHandler.debug(this, "%s====>received:%s".format(ref.address, e.getMessage))
     ref ! e.getMessage
   }
 

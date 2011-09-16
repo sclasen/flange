@@ -11,28 +11,33 @@ import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.MustMatchers
 import akka.actor.Actor._
 import com.heroku.doozer.flange.DoozerClient._
+import akka.event.EventHandler
 
 class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with Waiting {
 
   var client: Flange = null
-  var uri = "doozer:?ca=localhost:8046&sk=secret"
-  //var uri = "doozer:?ca=localhost:12345&ca=localhost:8046&sk=secret"
+  def uri = "doozer:?ca=localhost:8046&sk=secret"
 
   "A Doozer Client" must {
     "set and get and stat and delete values correctly" in {
-      System.out.println("Exceptions are to be expected here as we purposely use a url with a host thats not up to test failover")
       (1 to 20) foreach {
         i => {
-          val path = "/" + System.currentTimeMillis.toString
+          try{
+          val path = "/getset" + System.currentTimeMillis.toString
           val value = path + "--value"
           val response: SetResponse = client.set_!(path, value, 0L)
           val getResponse: GetResponse = client.get_!(path)
           getResponse.value must be(value.getBytes)
           client.stat_!(path,getResponse.rev).length must be(getResponse.value.length)
           client.delete_!(path, response.rev)
+          } catch {
+            case e:Exception =>
+              EventHandler.error(e,"SET TEST", "SET ERROR")
+              fail(e.fillInStackTrace().getStackTraceString)
+          }
         }
       }
-      val path = "/" + System.currentTimeMillis.toString
+      val path = "/getset" + System.currentTimeMillis.toString
       val value = path + "--value"
       val value2 = path + "--value2"
       val response: SetResponse = client.set_!(path, value, 0L)
@@ -46,7 +51,7 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
 
 
     "getdir correctly" in{
-      val path = "/" + System.currentTimeMillis.toString
+      val path = "/getdir" + System.currentTimeMillis.toString
       val a = path + "/a"
       val b = path + "/b"
       val c = path + "/c"
@@ -70,7 +75,7 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
     }
 
     "walk correctly" in{
-      val path = "/" + System.currentTimeMillis.toString
+      val path = "/walk" + System.currentTimeMillis.toString
       val pathglob = path + "/*"
       val a = path + "/a"
       val b = path + "/b"
@@ -119,11 +124,11 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
         wr => {
           wr match {
             case Right(w@WaitResponse(_, value, _)) => {
-              System.out.println(w.toString)
-              System.out.println(new String(value))
+              debug(w.toString)
+              debug(new String(value))
               signalAsyncDone()
             }
-            case Left(ErrorResponse(code, msg)) => System.out.println(code + " " + msg)
+            case Left(ErrorResponse(code, msg)) => fail(code + " " + msg)
           }
         }
       }
@@ -132,11 +137,11 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
         wr => {
           wr match {
             case Right(w@WaitResponse(_, value, _)) => {
-              System.out.println(w.toString)
-              System.out.println(new String(value))
+              debug(w.toString)
+              debug(new String(value))
               signalAsyncDone()
             }
-            case Left(ErrorResponse(code, msg)) => System.out.println(code + " " + msg)
+            case Left(ErrorResponse(code, msg)) => fail(code + " " + msg)
           }
 
 
@@ -147,7 +152,7 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
       client.set_!(path1, path2, response.rev)
 
       waitForAsync(10000) must be(true)
-      System.out.println("DONE")
+      debug("DONE")
 
       reset(2)
       client.watch(path2,set.rev){
@@ -179,19 +184,20 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
 
 
   def debug(any: Any) {
-    System.out.println(any.toString)
+    println(any.toString)
   }
 
   def failure(any: Any) {
-    System.out.println("Error in Async GET")
+    println("Error in Async GET")
     fail("Bad response")
   }
 
   "Two Clients" must {
     "not blow up" in {
       val second = new Flange(uri)
-      second.set("/second", "second" getBytes, 0)
-      client.get_!("/second").value must be("second".getBytes)
+      val path2 = "/second" + System.currentTimeMillis.toString
+      second.set(path2, "second" getBytes, 0)
+      client.get_!(path2).value must be("second".getBytes)
     }
   }
 
@@ -199,7 +205,12 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
     client = new Flange(uri)
   }
 
-  override protected def afterAll() {
-    //registry.local.shutdownAll()
-  }
+}
+
+class ClientSpecWithFailover extends ClientSpec{
+
+  override def uri = "doozer:?ca=localhost:12345&ca=localhost:8046&sk=secret"
+  println("Exceptions are to be expected here as we purposely use a url with a host thats not up to test failover")
+
+
 }
