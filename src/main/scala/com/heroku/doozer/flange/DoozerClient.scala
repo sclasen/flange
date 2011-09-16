@@ -164,7 +164,11 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
     val state = new ClientState(sk, failoverStrategy(doozerds))
     val conn = actorOf(Props(creator = () => new ConnectionActor(state), lifeCycle = Permanent))
     supervisor.link(conn)
-    conn
+  }
+
+  rev match {
+    case Right(RevResponse(current)) => EventHandler.info(this, "%s Connected, current rev is %d".format(connection.address,current))
+    case Left(ErrorResponse(code,desc)) => EventHandler.error(this, "%s Unable to connect, %s, %s".format(connection.address,code,desc))
   }
 
   def stop() {

@@ -23,7 +23,7 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
       (1 to 20) foreach {
         i => {
           try{
-          val path = "/getset" + System.currentTimeMillis.toString
+          val path = "/getset" + timestamp()
           val value = path + "--value"
           val response: SetResponse = client.set_!(path, value, 0L)
           val getResponse: GetResponse = client.get_!(path)
@@ -31,13 +31,13 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
           client.stat_!(path,getResponse.rev).length must be(getResponse.value.length)
           client.delete_!(path, response.rev)
           } catch {
-            case e:Exception =>
-              EventHandler.error(e,"SET TEST", "SET ERROR")
+            case e:ErrorResponseException =>
+              EventHandler.error(e, client, "SET ERROR"+e.resp.toString)
               fail(e.fillInStackTrace().getStackTraceString)
           }
         }
       }
-      val path = "/getset" + System.currentTimeMillis.toString
+      val path = "/getset" + timestamp()
       val value = path + "--value"
       val value2 = path + "--value2"
       val response: SetResponse = client.set_!(path, value, 0L)
@@ -51,7 +51,7 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
 
 
     "getdir correctly" in{
-      val path = "/getdir" + System.currentTimeMillis.toString
+      val path = "/getdir" + timestamp()
       val a = path + "/a"
       val b = path + "/b"
       val c = path + "/c"
@@ -75,7 +75,7 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
     }
 
     "walk correctly" in{
-      val path = "/walk" + System.currentTimeMillis.toString
+      val path = "/walk" + timestamp()
       val pathglob = path + "/*"
       val a = path + "/a"
       val b = path + "/b"
@@ -113,10 +113,8 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
     "wait correctly" in {
       reset(1)
 
-      val path1 = "/" + System.currentTimeMillis.toString
-      Thread.sleep(10)
-      val path2 = "/" + System.currentTimeMillis.toString
-
+      val path1 = "/" + timestamp()
+      val path2 = "/" + timestamp()
       val response: SetResponse = client.set_!(path1, path1, 0L)
       val response2: SetResponse = client.set_!(path2, path2, 0L)
 
@@ -171,6 +169,14 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
 
 
   }
+
+
+  def timestamp():String = {
+    Thread.sleep(1L)
+    System.currentTimeMillis().toString
+  }
+
+
 
   def asyncGet(value: String, resp: Either[ErrorResponse, GetResponse]) {
     resp match {

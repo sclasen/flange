@@ -8,6 +8,8 @@ scalaVersion := "2.9.0-1"
 
 compileOrder := CompileOrder.JavaThenScala
 
+parallelExecution in Test := false
+
 libraryDependencies ++= Seq(
     "se.scalablesolutions.akka" % "akka-actor" % "2.0-SNAPSHOT" withSources(),
     "se.scalablesolutions.akka" % "akka-slf4j" % "2.0-SNAPSHOT" withSources(),
