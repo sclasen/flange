@@ -15,7 +15,8 @@ import com.heroku.doozer.flange.DoozerClient._
 class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with Waiting {
 
   var client: Flange = null
-  var uri = "doozer:?ca=localhost:12345&ca=localhost:8046&sk=secret"
+  var uri = "doozer:?ca=localhost:8046&sk=secret"
+  //var uri = "doozer:?ca=localhost:12345&ca=localhost:8046&sk=secret"
 
   "A Doozer Client" must {
     "set and get and stat and delete values correctly" in {

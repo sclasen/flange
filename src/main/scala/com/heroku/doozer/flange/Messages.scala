@@ -136,3 +136,17 @@ case class DeleteResponse(path: String)
 case class ConnectionFailed()
 
 case object NoConnectionsLeft
+
+trait DoozerConnectionListener {
+
+  def connected()
+
+  def disconnected()
+
+}
+
+case class Connected()
+
+case class AddListener(listener:DoozerConnectionListener)
+
+case class RemoveListener(listener:DoozerConnectionListener)

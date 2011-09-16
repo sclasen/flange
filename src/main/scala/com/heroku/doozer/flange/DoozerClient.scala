@@ -9,11 +9,9 @@ package com.heroku.doozer.flange
 
 import doozer.DoozerMsg
 import doozer.DoozerMsg.Response.Err
-import akka.actor.Props
 import akka.actor.Actor._
-import akka.dispatch.{Future, Promise}
+import akka.dispatch.Future
 import org.jboss.netty.handler.codec.frame.{LengthFieldBasedFrameDecoder, LengthFieldPrepender}
-import collection.mutable.HashMap
 import akka.config.Supervision._
 import annotation.tailrec
 import util.matching.Regex
@@ -22,7 +20,8 @@ import akka.event.EventHandler
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicInteger
 import java.lang.{RuntimeException, Thread}
-import akka.actor.{UntypedChannel, MaximumNumberOfRestartsWithinTimeRangeReached, Actor}
+import collection.mutable.{HashSet, HashMap}
+import akka.actor._
 
 
 object DoozerClient {
@@ -91,8 +90,12 @@ trait DoozerClient {
 
   def watch(glob: String, rev: Long, watchFor: Long = Long.MaxValue)(callback: (Either[ErrorResponse, WaitResponse]) => Boolean)
 
+  def addConnectionListener(listener: DoozerConnectionListener)
+
+  def removeConnectionListener(listener: DoozerConnectionListener)
 
 }
+
 
 object Flange {
 
@@ -177,13 +180,13 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   private def retry[T](req: DoozerRequest)(success: PartialFunction[Any, Either[ErrorResponse, T]]): Either[ConnectionFailed, Either[ErrorResponse, T]] = {
     try {
-      val resp = (connection ? (req, req.timeout) ).as[Any]
+      val resp = (connection ? (req, req.timeout)).as[Any]
       if (resp.isDefined && success.isDefinedAt(resp.get)) Right(success(resp.get))
       else resp match {
         case Some(e@ErrorResponse(_, desc)) if desc equals "permission denied" => {
           (connection ? AccessRequest(sk)).as[Any] match {
             case Some(r: AccessResponse) => retry(req)(success)
-            case Some(er:ErrorResponse) => {
+            case Some(er: ErrorResponse) => {
               EventHandler.error(er, "cant auth")
               Left(ConnectionFailed())
             }
@@ -221,11 +224,11 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
             case Some(Right(e@ErrorResponse(_, desc))) if desc equals "permission denied" => {
               (connection ? AccessRequest(sk)).as[Any] match {
                 case Some(r: AccessResponse) => retry(req)(success)
-                case Some(er:ErrorResponse) => {
+                case Some(er: ErrorResponse) => {
                   EventHandler.error(er, "cant auth")
                   responseCallback(Left(e))
                 }
-                case None => completeFuture(req,responseCallback)(success) //todo test for correctness
+                case None => completeFuture(req, responseCallback)(success) //todo test for correctness
               }
             }
             case Some(Right(e@ErrorResponse(_, _))) => responseCallback(Left(e))
@@ -363,8 +366,8 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
     def inner(r: Long, either: Either[ErrorResponse, WaitResponse]) {
       if (callback.apply(either)) {
         either match {
-          case Left(_) =>  waitAsync(glob, r , waitFor)(inner(r , _))
-          case Right(WaitResponse(_,_,newRev)) => waitAsync(glob, newRev+1 , waitFor)(inner(newRev+1 , _))
+          case Left(_) => waitAsync(glob, r, waitFor)(inner(r, _))
+          case Right(WaitResponse(_, _, newRev)) => waitAsync(glob, newRev + 1, waitFor)(inner(newRev + 1, _))
         }
       }
     }
@@ -397,6 +400,10 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
     case Right(responses) => responses
     case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
   }
+
+  def removeConnectionListener(listener: DoozerConnectionListener) = connection ! RemoveListener(listener)
+
+  def addConnectionListener(listener: DoozerConnectionListener) = connection ! AddListener(listener)
 }
 
 class ConnectionSupervisor extends Actor {
@@ -406,7 +413,7 @@ class ConnectionSupervisor extends Actor {
   }
 }
 
-class ClientState(val secret: String, var hosts: Iterable[String], var tag: Int = 0)
+class ClientState(val secret: String, var hosts: Iterable[String], var tag: Int = 0, val listeners: HashSet[DoozerConnectionListener] = HashSet.empty[DoozerConnectionListener])
 
 class ConnectionFailedException(val host: String, cause: Throwable) extends RuntimeException(cause)
 
@@ -420,17 +427,14 @@ import java.net.InetSocketAddress
 import com.heroku.doozer.flange.Flange._
 
 
-class ConnectionActor(state: ClientState) extends Actor {
+class ConnectionActor(state: ClientState, connectorFact: => NettyConnector = new NettyProtobufConnector) extends Actor {
 
   private var host: String = null
   private var port: Int = 0
   private var requests = new HashMap[Int, DoozerRequest]
   private var responses = new HashMap[Int, UntypedChannel]
   private var connected = false
-  private var bootstrap: ClientBootstrap = null
-  private var handler: Handler = null
-  private var channel: Channel = null
-
+  private val connector = connectorFact
 
   state.hosts.headOption match {
     case Some(h) => {
@@ -453,21 +457,12 @@ class ConnectionActor(state: ClientState) extends Actor {
     notifyWaiters(new RuntimeException("Connection actor was stopped"))
   }
 
-  override def preRestart(reason: Throwable, message : Option[Any]) {
+  override def preRestart(reason: Throwable, message: Option[Any]) {
     EventHandler.warning(this, "failed:" + host + ":" + port)
-    try {
-      if (channel != null) channel.close()
-    }
-    catch {
-      case _ =>
-    }
-    try {
-      if (bootstrap != null) bootstrap.releaseExternalResources()
-    }
-    catch {
-      case _ =>
-    }
+    connected = false
+    connector.teardown()
     notifyWaiters(reason)
+    notifyDisconnected()
   }
 
 
@@ -480,23 +475,7 @@ class ConnectionActor(state: ClientState) extends Actor {
   }
 
   private def connect() {
-    bootstrap = new ClientBootstrap(new NioClientSocketChannelFactory(
-      Executors.newCachedThreadPool(daemonThreadFactory),
-      Executors.newCachedThreadPool(daemonThreadFactory)));
-    bootstrap.setPipelineFactory(new PipelineFactory());
-    bootstrap.setOption("tcpNoDelay", true)
-    bootstrap.setOption("keepAlive", true)
-    // Make a new connection.
-    val connectFuture =
-      bootstrap.connect(new InetSocketAddress(host, port));
-    // Wait until the connection is made successfully
-    connectFuture.awaitUninterruptibly()
-    if (connectFuture.isSuccess) channel = connectFuture.getChannel
-    else throw new IllegalStateException("Channel didnt connect")
-    // Get the handler instance to initiate the request.
-    handler =
-      channel.getPipeline().get(classOf[Handler])
-    handler.ref = self
+    connector.connect(host,port,self)
   }
 
   private def doSend(req: DoozerRequest): Unit = {
@@ -507,8 +486,9 @@ class ConnectionActor(state: ClientState) extends Actor {
     if (!connected) {
       connect()
       connected = true
+      notifyConnected()
     }
-    handler.send(req.toBuilder.setTag(currentTag).build)
+    connector.handler().send(req.toBuilder.setTag(currentTag).build)
   }
 
 
@@ -529,10 +509,78 @@ class ConnectionActor(state: ClientState) extends Actor {
         case None => EventHandler.warning(this, "Revieved a response with tag %d but there was no request to correlate with".format(response.getTag))
       }
     }
+
+    case AddListener(listener) => state.listeners += listener
+    case RemoveListener(listener) => state.listeners.remove(listener)
+
   }
 
+  private def notifyConnected() {
+    state.listeners.foreach(listener => spawn(listener.connected()))
+  }
+
+  private def notifyDisconnected() {
+    state.listeners.foreach(listener => spawn(listener.disconnected()))
+  }
 
 }
+
+
+trait NettyConnector {
+
+  def connect(host:String, port:Int, ref:ActorRef)
+
+  def teardown()
+
+  def handler(): Handler
+
+}
+
+class NettyProtobufConnector extends NettyConnector{
+
+  private var _handler: Handler = null
+  private var bootstrap: ClientBootstrap = null
+  private var channel: Channel = null
+
+  def handler() = _handler
+
+  def teardown() {
+     try {
+      if (channel != null) channel.close()
+    }
+    catch {
+      case _ =>
+    }
+    try {
+      if (bootstrap != null) bootstrap.releaseExternalResources()
+    }
+    catch {
+      case _ =>
+    }
+  }
+
+  def connect(host: String, port: Int, self: ActorRef) {
+     bootstrap = new ClientBootstrap(new NioClientSocketChannelFactory(
+      Executors.newCachedThreadPool(daemonThreadFactory),
+      Executors.newCachedThreadPool(daemonThreadFactory)));
+    _handler = new Handler
+    _handler.ref = self
+    bootstrap.setPipelineFactory(new PipelineFactory(_handler));
+    bootstrap.setOption("tcpNoDelay", true)
+    bootstrap.setOption("keepAlive", true)
+
+    // Make a new connection.
+    val connectFuture =
+      bootstrap.connect(new InetSocketAddress(host, port));
+    // Wait until the connection is made successfully
+    connectFuture.awaitUninterruptibly()
+    if (connectFuture.isSuccess) channel = connectFuture.getChannel
+    else throw new IllegalStateException("Channel didnt connect")
+    // Get the handler instance to initiate the request.
+
+  }
+}
+
 
 import org.jboss.netty.channel._
 import akka.actor.ActorRef
@@ -567,14 +615,14 @@ class Handler extends SimpleChannelUpstreamHandler {
 import org.jboss.netty.channel.ChannelPipelineFactory
 import org.jboss.netty.handler.codec.protobuf._
 
-class PipelineFactory extends ChannelPipelineFactory {
+class PipelineFactory(handler:Handler) extends ChannelPipelineFactory {
   def getPipeline = {
     val p = Channels.pipeline
     p.addLast("frameDecoder", new LengthFieldBasedFrameDecoder(1048576, 0, 4, 0, 4))
     p.addLast("protobufDecoder", new ProtobufDecoder(DoozerMsg.Response.getDefaultInstance()))
     p.addLast("frameEncoder", new LengthFieldPrepender(4))
     p.addLast("protobufEncoder", new ProtobufEncoder())
-    p.addLast("handler", new Handler)
+    p.addLast("handler", handler)
     p
   }
 
