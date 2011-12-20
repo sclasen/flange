@@ -17,11 +17,12 @@ import java.lang.{RuntimeException, Thread}
 import collection.mutable.{HashSet, HashMap}
 import akka.actor._
 import akka.event.Logging
-import akka.dispatch.{Future, Await}
 import akka.actor.Status.Failure
 import java.util.concurrent.ThreadFactory
 import akka.util.Timeout
 import doozer.DoozerMsg.Response.Err
+import akka.dispatch._
+import com.typesafe.config.ConfigFactory
 
 
 object DoozerClient {
@@ -162,7 +163,7 @@ import Flange._
 class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[String] = eachDoozerOnceStrategy) extends DoozerClient {
 
   private val (doozerds, sk) = parseDoozerUri(doozerUri)
-  private val system = ActorSystem("Flange")
+  private val system = ActorSystem("flange", ConfigFactory.load().getConfig("flange"))
   private val log = Logging(system, doozerUri)
   private val connection = {
     val state = new ClientState(sk, failoverStrategy(doozerds))
@@ -189,7 +190,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
       implicit val reqTimeout = Timeout(req.timeout)
       val f = connection ? req
       f.onFailure {
-        case e: Exception => Left(ConnectionFailed())
+        case e: Exception => ConnectionFailed
       }
       val resp = Await.result(f, reqTimeout.duration)
       if (success.isDefinedAt(resp)) Right(success(resp))
@@ -204,6 +205,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
           }
         }
         case e@ErrorResponse(_, _) => Right(Left(e))
+        case ConnectionFailed => Left(ConnectionFailed())
         case NoConnectionsLeft => Right(noConnections)
       }
     } catch {
@@ -253,18 +255,15 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def deleteAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, DeleteResponse]) => Unit) {
     completeFuture[DeleteResponse](DeleteRequest(path, rev), callback) {
-      case Right(d@DeleteResponse(_)) => Right(d)
+      case Right(d: DeleteResponse) => Right(d)
     }
   }
 
 
-  def delete_!(path: String, rev: Long) = delete(path, rev) match {
-    case Right(d@DeleteResponse(_)) => d
-    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
-  }
+  def delete_!(path: String, rev: Long) = delete(path, rev).fold(e => throw new ErrorResponseException(e), r => r)
 
   def delete(path: String, rev: Long) = complete[DeleteResponse](DeleteRequest(path, rev)) {
-    case d@DeleteResponse(_) => Right(d)
+    case d: DeleteResponse => Right(d)
   }
 
   def setAsync(path: String, value: Array[Byte], rev: Long)(callback: (Either[ErrorResponse, SetResponse]) => Unit) {
@@ -273,13 +272,11 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
     }
   }
 
-  def set_!(path: String, value: Array[Byte], rev: Long) = set(path, value, rev) match {
-    case Right(s@SetResponse(_)) => s
-    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
-  }
+  def set_!(path: String, value: Array[Byte], rev: Long) = set(path, value, rev).fold(e => throw new ErrorResponseException(e), r => r)
+
 
   def set(path: String, value: Array[Byte], rev: Long) = complete[SetResponse](SetRequest(path, value, rev)) {
-    case s@SetResponse(_) => Right(s)
+    case s: SetResponse => Right(s)
   }
 
   def getAsync(path: String, rev: Long = 0L)(callback: (Either[ErrorResponse, GetResponse]) => Unit) {
@@ -289,13 +286,10 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
   }
 
   def get(path: String, rev: Long = 0L): Either[ErrorResponse, GetResponse] = complete[GetResponse](GetRequest(path, rev)) {
-    case g@GetResponse(_, _) => Right(g)
+    case g: GetResponse => Right(g)
   }
 
-  def get_!(path: String, rev: Long = 0L) = get(path, rev) match {
-    case Right(g@GetResponse(_, _)) => g
-    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
-  }
+  def get_!(path: String, rev: Long = 0L) = get(path, rev).fold(e => throw new ErrorResponseException(e), r => r)
 
   def revAsync(callback: (Either[ErrorResponse, RevResponse]) => Unit) {
     completeFuture[RevResponse](RevRequest, callback) {
@@ -304,13 +298,10 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
   }
 
   def rev = complete[RevResponse](RevRequest) {
-    case r@RevResponse(_) => Right(r)
+    case r: RevResponse => Right(r)
   }
 
-  def rev_! = rev match {
-    case Right(r@RevResponse(_)) => r
-    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
-  }
+  def rev_! = rev.fold(e => throw new ErrorResponseException(e), r => r)
 
   def waitAsync(glob: String, rev: Long, waitFor: Long = Long.MaxValue)(callback: (Either[ErrorResponse, WaitResponse]) => Unit) = {
     completeFuture[WaitResponse](WaitRequest(glob, rev, waitFor), callback) {
@@ -319,13 +310,10 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
   }
 
   def wait(glob: String, rev: Long, waitFor: Long = Long.MaxValue) = complete[WaitResponse](WaitRequest(glob, rev, waitFor)) {
-    case w@WaitResponse(_, _, _) => Right(w)
+    case w: WaitResponse => Right(w)
   }
 
-  def wait_!(glob: String, rev: Long, waitFor: Long = Long.MaxValue) = wait(glob, rev, waitFor) match {
-    case Right(w@WaitResponse(_, _, _)) => w
-    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
-  }
+  def wait_!(glob: String, rev: Long, waitFor: Long = Long.MaxValue) = wait(glob, rev, waitFor).fold(e => throw new ErrorResponseException(e), r => r)
 
   def statAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, StatResponse]) => Unit) = {
     completeFuture[StatResponse](StatRequest(path, rev), callback) {
@@ -334,23 +322,17 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
   }
 
   def stat(path: String, rev: Long) = complete[StatResponse](StatRequest(path, rev)) {
-    case s@StatResponse(_, _, _) => Right(s)
+    case s: StatResponse => Right(s)
   }
 
 
-  def stat_!(path: String, rev: Long) = stat(path, rev) match {
-    case Right(s@StatResponse(_, _, _)) => s
-    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
-  }
+  def stat_!(path: String, rev: Long) = stat(path, rev).fold(e => throw new ErrorResponseException(e), r => r)
 
   def getdir(dir: String, rev: Long, offset: Int) = complete[GetdirResponse](GetdirRequest(dir, rev, offset)) {
-    case g@GetdirResponse(_, _) => Right(g)
+    case g: GetdirResponse => Right(g)
   }
 
-  def getdir_!(dir: String, rev: Long, offset: Int) = getdir(dir, rev, offset) match {
-    case Right(g@GetdirResponse(_, _)) => g
-    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
-  }
+  def getdir_!(dir: String, rev: Long, offset: Int) = getdir(dir, rev, offset).fold(e => throw new ErrorResponseException(e), r => r)
 
   def getdirAsync(dir: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, GetdirResponse]) => Unit) = {
     completeFuture[GetdirResponse](GetdirRequest(dir, rev, offset), callback) {
@@ -359,13 +341,10 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
   }
 
   def walk(glob: String, rev: Long, offset: Int) = complete[WalkResponse](WalkRequest(glob, rev, offset)) {
-    case w@WalkResponse(_, _, _) => Right(w)
+    case w: WalkResponse => Right(w)
   }
 
-  def walk_!(glob: String, rev: Long, offset: Int) = walk(glob, rev, offset) match {
-    case Right(w@WalkResponse(_, _, _)) => w
-    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
-  }
+  def walk_!(glob: String, rev: Long, offset: Int) = walk(glob, rev, offset).fold(e => throw new ErrorResponseException(e), r => r)
 
   def walkAsync(glob: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, WalkResponse]) => Unit) = {
     completeFuture[WalkResponse](WalkRequest(glob, rev, offset), callback) {
@@ -402,15 +381,9 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
     all_internal[WalkResponse](walk(glob, rev, _), 0, Nil)
   }
 
-  def getdir_all_!(dir: String, rev: Long) = getdir_all(dir, rev) match {
-    case Right(responses) => responses
-    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
-  }
+  def getdir_all_!(dir: String, rev: Long) = getdir_all(dir, rev).fold(e => throw new ErrorResponseException(e), r => r)
 
-  def walk_all_!(glob: String, rev: Long) = walk_all(glob, rev) match {
-    case Right(responses) => responses
-    case Left(e@ErrorResponse(_, _)) => throw new ErrorResponseException(e)
-  }
+  def walk_all_!(glob: String, rev: Long) = walk_all(glob, rev).fold(e => throw new ErrorResponseException(e), r => r)
 
   def removeConnectionListener(listener: DoozerConnectionListener) = connection ! RemoveListener(listener)
 
@@ -484,7 +457,7 @@ class ConnectionActor(state: ClientState, connectorFact: => NettyConnector = new
   }
 
   private def connect() {
-    connector.connect(host, port, self)
+    connector.connect(host, port, self, context.system)
   }
 
   private def doSend(req: DoozerRequest): Unit = {
@@ -541,7 +514,7 @@ class ConnectionActor(state: ClientState, connectorFact: => NettyConnector = new
 
 trait NettyConnector {
 
-  def connect(host: String, port: Int, ref: ActorRef)
+  def connect(host: String, port: Int, ref: ActorRef, system: ActorSystem)
 
   def teardown()
 
@@ -572,11 +545,11 @@ class NettyProtobufConnector extends NettyConnector {
     }
   }
 
-  def connect(host: String, port: Int, self: ActorRef) {
+  def connect(host: String, port: Int, self: ActorRef, system: ActorSystem) {
     bootstrap = new ClientBootstrap(new NioClientSocketChannelFactory(
       Executors.newCachedThreadPool(daemonThreadFactory),
       Executors.newCachedThreadPool(daemonThreadFactory)));
-    _handler = new Handler(self)
+    _handler = new Handler(self, system)
     bootstrap.setPipelineFactory(new PipelineFactory(_handler));
     bootstrap.setOption("tcpNoDelay", true)
     bootstrap.setOption("keepAlive", true)
@@ -597,25 +570,26 @@ class NettyProtobufConnector extends NettyConnector {
 import org.jboss.netty.channel._
 import akka.actor.ActorRef
 
-class Handler(ref: ActorRef) extends SimpleChannelUpstreamHandler {
+class Handler(ref: ActorRef, system: ActorSystem) extends SimpleChannelUpstreamHandler {
 
-  //val log = Logging(system, this)
+  val log = Logging(system, "NettyHandler")
+  log.debug("Created NettyHandler")
 
   @volatile var channel: Channel = null
 
   def send(msg: DoozerMsg.Request) {
-    //log.debug(this, "%s====>sent:%s".format(ref.address, msg.toString))
+    log.debug("%s====>sent:%s".format(ref, msg.toString))
     val future = channel.write(msg)
     future.awaitUninterruptibly
   }
 
 
   override def exceptionCaught(ctx: ChannelHandlerContext, e: ExceptionEvent) {
-    //log.error(e.getCause, this, "exceptionCaught")
+    log.error(e.getCause, "exceptionCaught")
   }
 
   override def messageReceived(ctx: ChannelHandlerContext, e: MessageEvent) {
-    //log.debug(this, "%s====>received:%s".format(ref.address, e.getMessage))
+    log.debug("%s====>received:%s".format(ref, e.getMessage))
     ref ! e.getMessage
   }
 
