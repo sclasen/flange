@@ -8,20 +8,20 @@
 package com.heroku.doozer.flange
 
 import doozer.DoozerMsg
-import doozer.DoozerMsg.Response.Err
-import akka.actor.Actor._
-import akka.dispatch.Future
 import org.jboss.netty.handler.codec.frame.{LengthFieldBasedFrameDecoder, LengthFieldPrepender}
-import akka.config.Supervision._
 import annotation.tailrec
 import util.matching.Regex
 
-import akka.event.EventHandler
-import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicInteger
 import java.lang.{RuntimeException, Thread}
 import collection.mutable.{HashSet, HashMap}
 import akka.actor._
+import akka.event.Logging
+import akka.dispatch.{Future, Await}
+import akka.actor.Status.Failure
+import java.util.concurrent.ThreadFactory
+import akka.util.Timeout
+import doozer.DoozerMsg.Response.Err
 
 
 object DoozerClient {
@@ -94,6 +94,9 @@ trait DoozerClient {
 
   def removeConnectionListener(listener: DoozerConnectionListener)
 
+  def stop(): Unit
+
+
 }
 
 
@@ -159,21 +162,20 @@ import Flange._
 class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[String] = eachDoozerOnceStrategy) extends DoozerClient {
 
   private val (doozerds, sk) = parseDoozerUri(doozerUri)
-  private val supervisor = actorOf(Props(creator = () => new ConnectionSupervisor, faultHandler = OneForOneStrategy(List(classOf[Exception]), doozerds.size, doozerds.size * 1000)))
+  private val system = ActorSystem("Flange")
+  private val log = Logging(system, doozerUri)
   private val connection = {
     val state = new ClientState(sk, failoverStrategy(doozerds))
-    val conn = actorOf(Props(creator = () => new ConnectionActor(state), lifeCycle = Permanent))
-    supervisor.link(conn)
+    system.actorOf(Props(creator = () => new ConnectionActor(state)), "connectionActor")
   }
 
   rev match {
-    case Right(RevResponse(current)) => EventHandler.info(this, "%s Connected, current rev is %d".format(connection.address,current))
-    case Left(ErrorResponse(code,desc)) => EventHandler.error(this, "%s Unable to connect, %s, %s".format(connection.address,code,desc))
+    case Right(RevResponse(current)) => log.info("%s Connected, current rev is %d".format(connection, current))
+    case Left(ErrorResponse(code, desc)) => log.error("%s Unable to connect, %s, %s".format(connection, code, desc))
   }
 
   def stop() {
-    connection.stop()
-    supervisor.stop()
+    system.shutdown()
   }
 
   private def timeout = Left(ErrorResponse("CLIENT_TIMEOUT", "The operation timed out"))
@@ -184,26 +186,29 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   private def retry[T](req: DoozerRequest)(success: PartialFunction[Any, Either[ErrorResponse, T]]): Either[ConnectionFailed, Either[ErrorResponse, T]] = {
     try {
-      val resp = (connection ? (req, req.timeout)).as[Any]
-      if (resp.isDefined && success.isDefinedAt(resp.get)) Right(success(resp.get))
+      implicit val reqTimeout = Timeout(req.timeout)
+      val f = connection ? req
+      f.onFailure {
+        case e: Exception => Left(ConnectionFailed())
+      }
+      val resp = Await.result(f, reqTimeout.duration)
+      if (success.isDefinedAt(resp)) Right(success(resp))
       else resp match {
-        case Some(e@ErrorResponse(_, desc)) if desc equals "permission denied" => {
-          (connection ? AccessRequest(sk)).as[Any] match {
-            case Some(r: AccessResponse) => retry(req)(success)
-            case Some(er: ErrorResponse) => {
-              EventHandler.error(er, "cant auth")
+        case ErrorResponse(_, desc) if desc equals "permission denied" => {
+          Await.result(connection ? AccessRequest(sk), reqTimeout.duration) match {
+            case r: AccessResponse => retry(req)(success)
+            case er: ErrorResponse => {
+              log.error("cant auth")
               Left(ConnectionFailed())
             }
-            case None => Left(ConnectionFailed())
           }
         }
-        case Some(e@ErrorResponse(_, _)) => Right(Left(e))
-        case Some(NoConnectionsLeft) => Right(noConnections)
-        case None => Left(ConnectionFailed())
+        case e@ErrorResponse(_, _) => Right(Left(e))
+        case NoConnectionsLeft => Right(noConnections)
       }
     } catch {
       case e =>
-        EventHandler.error(e, this, "error")
+        log.error(e, "error")
         Left(ConnectionFailed())
     }
   }
@@ -219,34 +224,36 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
 
   private def completeFuture[T](req: DoozerRequest, responseCallback: (Either[ErrorResponse, T] => Unit))(success: PartialFunction[Any, Either[ErrorResponse, T]]) {
-    val future: Future[_] = connection ? (req, req.timeout)
-    future.asInstanceOf[Future[T]].onComplete {
-      f: Future[T] =>
-        if (success.isDefinedAt(f.value)) responseCallback(success(f.value))
-        else {
-          f.value match {
-            case Some(Right(e@ErrorResponse(_, desc))) if desc equals "permission denied" => {
-              (connection ? AccessRequest(sk)).as[Any] match {
-                case Some(r: AccessResponse) => retry(req)(success)
-                case Some(er: ErrorResponse) => {
-                  EventHandler.error(er, "cant auth")
+    implicit val reqTimeout = Timeout(req.timeout)
+    (connection ? req).recover {
+      case e: Exception => completeFuture(req, responseCallback)(success)
+    } onSuccess {
+      case response: Any => {
+        if (success.isDefinedAt(response)) {
+          responseCallback(success.apply(response))
+        } else {
+          response match {
+            case ErrorResponse(_, desc) if desc equals "permission denied" => {
+              Await.result(connection ? AccessRequest(sk), reqTimeout.duration) match {
+                case r: AccessResponse => completeFuture(req, responseCallback)(success)
+                case e: ErrorResponse => {
+                  log.error("cant auth")
                   responseCallback(Left(e))
                 }
-                case None => completeFuture(req, responseCallback)(success) //todo test for correctness
               }
             }
-            case Some(Right(e@ErrorResponse(_, _))) => responseCallback(Left(e))
-            case Some(Right(NoConnectionsLeft)) => responseCallback(noConnections)
-            case _ => completeFuture(req, responseCallback)(success)
+            case e: ErrorResponse => responseCallback(Left(e))
+            case NoConnectionsLeft => responseCallback(noConnections)
           }
         }
+      }
     }
   }
 
 
   def deleteAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, DeleteResponse]) => Unit) {
     completeFuture[DeleteResponse](DeleteRequest(path, rev), callback) {
-      case Some(Right(d@DeleteResponse(_))) => Right(d)
+      case Right(d@DeleteResponse(_)) => Right(d)
     }
   }
 
@@ -262,7 +269,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def setAsync(path: String, value: Array[Byte], rev: Long)(callback: (Either[ErrorResponse, SetResponse]) => Unit) {
     completeFuture[SetResponse](SetRequest(path, value, rev), callback) {
-      case Some(Right(s@SetResponse(_))) => Right(s)
+      case Right(s@SetResponse(_)) => Right(s)
     }
   }
 
@@ -277,7 +284,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def getAsync(path: String, rev: Long = 0L)(callback: (Either[ErrorResponse, GetResponse]) => Unit) {
     completeFuture[GetResponse](GetRequest(path, rev), callback) {
-      case Some(Right(g@GetResponse(_, _))) => Right(g)
+      case Right(g@GetResponse(_, _)) => Right(g)
     }
   }
 
@@ -292,7 +299,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def revAsync(callback: (Either[ErrorResponse, RevResponse]) => Unit) {
     completeFuture[RevResponse](RevRequest, callback) {
-      case Some(Right(r@RevResponse(_))) => Right(r)
+      case Right(r@RevResponse(_)) => Right(r)
     }
   }
 
@@ -307,7 +314,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def waitAsync(glob: String, rev: Long, waitFor: Long = Long.MaxValue)(callback: (Either[ErrorResponse, WaitResponse]) => Unit) = {
     completeFuture[WaitResponse](WaitRequest(glob, rev, waitFor), callback) {
-      case Some(Right(w@WaitResponse(_, _, _))) => Right(w)
+      case Right(w@WaitResponse(_, _, _)) => Right(w)
     }
   }
 
@@ -322,7 +329,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def statAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, StatResponse]) => Unit) = {
     completeFuture[StatResponse](StatRequest(path, rev), callback) {
-      case Some(Right(s@StatResponse(_, _, _))) => Right(s)
+      case Right(s@StatResponse(_, _, _)) => Right(s)
     }
   }
 
@@ -347,7 +354,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def getdirAsync(dir: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, GetdirResponse]) => Unit) = {
     completeFuture[GetdirResponse](GetdirRequest(dir, rev, offset), callback) {
-      case Some(Right(g@GetdirResponse(_, _))) => Right(g)
+      case Right(g@GetdirResponse(_, _)) => Right(g)
     }
   }
 
@@ -362,7 +369,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def walkAsync(glob: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, WalkResponse]) => Unit) = {
     completeFuture[WalkResponse](WalkRequest(glob, rev, offset), callback) {
-      case Some(Right(w@WalkResponse(_, _, _))) => Right(w)
+      case Right(w@WalkResponse(_, _, _)) => Right(w)
     }
   }
 
@@ -410,13 +417,6 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
   def addConnectionListener(listener: DoozerConnectionListener) = connection ! AddListener(listener)
 }
 
-class ConnectionSupervisor extends Actor {
-
-  protected def receive = {
-    case MaximumNumberOfRestartsWithinTimeRangeReached(_, _, _, ex) => EventHandler.error(ex, this, "Too Many Restarts")
-  }
-}
-
 class ClientState(val secret: String, var hosts: Iterable[String], var tag: Int = 0, val listeners: HashSet[DoozerConnectionListener] = HashSet.empty[DoozerConnectionListener])
 
 class ConnectionFailedException(val host: String, cause: Throwable) extends RuntimeException(cause)
@@ -432,13 +432,14 @@ import com.heroku.doozer.flange.Flange._
 
 
 class ConnectionActor(state: ClientState, connectorFact: => NettyConnector = new NettyProtobufConnector) extends Actor {
-
+  private val log = Logging(context.system, this)
   private var host: String = null
   private var port: Int = 0
   private var requests = new HashMap[Int, DoozerRequest]
-  private var responses = new HashMap[Int, UntypedChannel]
+  private var responses = new HashMap[Int, ActorRef]
   private var connected = false
   private val connector = connectorFact
+  implicit val dispatcher = context.dispatcher
 
   state.hosts.headOption match {
     case Some(h) => {
@@ -447,14 +448,14 @@ class ConnectionActor(state: ClientState, connectorFact: => NettyConnector = new
       state.hosts = state.hosts.tail
     }
     case None => {
-      become(noConn(), false)
+      log.error("No more connections")
     }
   }
 
   private def notifyWaiters(ex: Throwable) {
     for {
       channel <- responses.values
-    } channel.sendException(ex)
+    } channel ! Failure(ex)
   }
 
   override def postStop() {
@@ -462,7 +463,7 @@ class ConnectionActor(state: ClientState, connectorFact: => NettyConnector = new
   }
 
   override def preRestart(reason: Throwable, message: Option[Any]) {
-    EventHandler.warning(this, "failed:" + host + ":" + port)
+    log.warning("failed:" + host + ":" + port)
     connected = false
     connector.teardown()
     notifyWaiters(reason)
@@ -471,22 +472,26 @@ class ConnectionActor(state: ClientState, connectorFact: => NettyConnector = new
 
 
   override def postRestart(reason: Throwable) {
-    EventHandler.warning(this, "failTo:" + host + ":" + port)
+    if (host != null) {
+      log.warning("failTo:" + host + ":" + port)
+    } else {
+      context.become(noConn(), false)
+    }
   }
 
   private def noConn(): Receive = {
-    case _ => self.reply(NoConnectionsLeft)
+    case _ => sender ! NoConnectionsLeft
   }
 
   private def connect() {
-    connector.connect(host,port,self)
+    connector.connect(host, port, self)
   }
 
   private def doSend(req: DoozerRequest): Unit = {
     val currentTag = state.tag
     state.tag += 1
     requests += currentTag -> req
-    responses += currentTag -> self.channel
+    responses += currentTag -> sender
     if (!connected) {
       connect()
       connected = true
@@ -507,10 +512,10 @@ class ConnectionActor(state: ClientState, connectorFact: => NettyConnector = new
           }
           responses.remove(response.getTag) match {
             case Some(channel) => channel ! msg
-            case None => EventHandler.warning(this, "Received a response with tag %d but there was no futute to complete".format(response.getTag))
+            case None => log.warning("Received a response with tag %d but there was no futute to complete".format(response.getTag))
           }
         }
-        case None => EventHandler.warning(this, "Revieved a response with tag %d but there was no request to correlate with".format(response.getTag))
+        case None => log.warning("Revieved a response with tag %d but there was no request to correlate with".format(response.getTag))
       }
     }
 
@@ -520,11 +525,15 @@ class ConnectionActor(state: ClientState, connectorFact: => NettyConnector = new
   }
 
   private def notifyConnected() {
-    state.listeners.foreach(listener => spawn(listener.connected()))
+    state.listeners.map {
+      l => Future(l.connected())
+    }
   }
 
   private def notifyDisconnected() {
-    state.listeners.foreach(listener => spawn(listener.disconnected()))
+    state.listeners.map {
+      l => Future(l.disconnected())
+    }
   }
 
 }
@@ -532,7 +541,7 @@ class ConnectionActor(state: ClientState, connectorFact: => NettyConnector = new
 
 trait NettyConnector {
 
-  def connect(host:String, port:Int, ref:ActorRef)
+  def connect(host: String, port: Int, ref: ActorRef)
 
   def teardown()
 
@@ -540,7 +549,7 @@ trait NettyConnector {
 
 }
 
-class NettyProtobufConnector extends NettyConnector{
+class NettyProtobufConnector extends NettyConnector {
 
   private var _handler: Handler = null
   private var bootstrap: ClientBootstrap = null
@@ -549,7 +558,7 @@ class NettyProtobufConnector extends NettyConnector{
   def handler() = _handler
 
   def teardown() {
-     try {
+    try {
       if (channel != null) channel.close()
     }
     catch {
@@ -564,7 +573,7 @@ class NettyProtobufConnector extends NettyConnector{
   }
 
   def connect(host: String, port: Int, self: ActorRef) {
-     bootstrap = new ClientBootstrap(new NioClientSocketChannelFactory(
+    bootstrap = new ClientBootstrap(new NioClientSocketChannelFactory(
       Executors.newCachedThreadPool(daemonThreadFactory),
       Executors.newCachedThreadPool(daemonThreadFactory)));
     _handler = new Handler(self)
@@ -588,23 +597,25 @@ class NettyProtobufConnector extends NettyConnector{
 import org.jboss.netty.channel._
 import akka.actor.ActorRef
 
-class Handler(ref:ActorRef) extends SimpleChannelUpstreamHandler {
+class Handler(ref: ActorRef) extends SimpleChannelUpstreamHandler {
+
+  //val log = Logging(system, this)
 
   @volatile var channel: Channel = null
 
   def send(msg: DoozerMsg.Request) {
-    EventHandler.debug(this, "%s====>sent:%s".format(ref.address, msg.toString))
+    //log.debug(this, "%s====>sent:%s".format(ref.address, msg.toString))
     val future = channel.write(msg)
     future.awaitUninterruptibly
   }
 
 
   override def exceptionCaught(ctx: ChannelHandlerContext, e: ExceptionEvent) {
-    EventHandler.error(e.getCause, this, "exceptionCaught")
+    //log.error(e.getCause, this, "exceptionCaught")
   }
 
   override def messageReceived(ctx: ChannelHandlerContext, e: MessageEvent) {
-    EventHandler.debug(this, "%s====>received:%s".format(ref.address, e.getMessage))
+    //log.debug(this, "%s====>received:%s".format(ref.address, e.getMessage))
     ref ! e.getMessage
   }
 
@@ -617,7 +628,7 @@ class Handler(ref:ActorRef) extends SimpleChannelUpstreamHandler {
 import org.jboss.netty.channel.ChannelPipelineFactory
 import org.jboss.netty.handler.codec.protobuf._
 
-class PipelineFactory(handler:Handler) extends ChannelPipelineFactory {
+class PipelineFactory(handler: Handler) extends ChannelPipelineFactory {
   def getPipeline = {
     val p = Channels.pipeline
     p.addLast("frameDecoder", new LengthFieldBasedFrameDecoder(1048576, 0, 4, 0, 4))
