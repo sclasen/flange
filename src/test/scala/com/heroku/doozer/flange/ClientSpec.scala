@@ -41,7 +41,7 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
       val response: SetResponse = client.set_!(path, value, 0L)
       val response2: SetResponse = client.set_!(path, value2, response.rev)
       client.getAsync(path)(asyncGet(value2, _))
-      waitForAsync(1000) must be(true)
+      waitForAsync(5000) must be(true)
       client.get_!(path, response.rev).value must be(value.getBytes)
       client.get_!(path, response2.rev).value must be(value2.getBytes)
       client.delete_!(path, response2.rev)
@@ -225,11 +225,3 @@ class ClientSpec extends WordSpec with MustMatchers with BeforeAndAfterAll with 
   }
 }
 
-class ClientSpecWithFailover extends ClientSpec {
-
-  override def uri = "doozer:?ca=localhost:12345&ca=ec2-50-16-107-250.compute-1.amazonaws.com:8046&sk=secret"
-
-  println("Exceptions are to be expected here as we purposely use a url with a host thats not up to test failover")
-
-
-}

@@ -113,7 +113,7 @@ object Flange {
     }
   }
 
-  def parseDoozerUri(doozerUri: String): (List[String], String) = {
+  def parseDoozerUri(doozerUri: String): (List[String], Option[String]) = {
     """^doozer:\?(.*)$""".r.findFirstMatchIn(doozerUri) match {
       case Some(m@Regex.Match(_)) => {
         val doozerds = for {
@@ -127,7 +127,7 @@ object Flange {
           v <- sks.split("=").tail.headOption
         } yield v
 
-        (doozerds, sk.headOption.getOrElse(throw new IllegalArgumentException("Missing sk param")))
+        (doozerds, sk.headOption)
       }
       case _ => throw new IllegalArgumentException("cant parse doozerUri:" + doozerUri)
     }
@@ -196,7 +196,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
       if (success.isDefinedAt(resp)) Right(success(resp))
       else resp match {
         case ErrorResponse(_, desc) if desc equals "permission denied" => {
-          Await.result(connection ? AccessRequest(sk), reqTimeout.duration) match {
+          Await.result(connection ? AccessRequest(sk.get), reqTimeout.duration) match {
             case r: AccessResponse => retry(req)(success)
             case er: ErrorResponse => {
               log.error("cant auth")
@@ -236,7 +236,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
         } else {
           response match {
             case ErrorResponse(_, desc) if desc equals "permission denied" => {
-              Await.result(connection ? AccessRequest(sk), reqTimeout.duration) match {
+              Await.result(connection ? AccessRequest(sk.get), reqTimeout.duration) match {
                 case r: AccessResponse => completeFuture(req, responseCallback)(success)
                 case e: ErrorResponse => {
                   log.error("cant auth")
@@ -255,7 +255,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def deleteAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, DeleteResponse]) => Unit) {
     completeFuture[DeleteResponse](DeleteRequest(path, rev), callback) {
-      case Right(d: DeleteResponse) => Right(d)
+      case d: DeleteResponse => Right(d)
     }
   }
 
@@ -268,7 +268,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def setAsync(path: String, value: Array[Byte], rev: Long)(callback: (Either[ErrorResponse, SetResponse]) => Unit) {
     completeFuture[SetResponse](SetRequest(path, value, rev), callback) {
-      case Right(s@SetResponse(_)) => Right(s)
+      case s: SetResponse => Right(s)
     }
   }
 
@@ -281,7 +281,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def getAsync(path: String, rev: Long = 0L)(callback: (Either[ErrorResponse, GetResponse]) => Unit) {
     completeFuture[GetResponse](GetRequest(path, rev), callback) {
-      case Right(g@GetResponse(_, _)) => Right(g)
+      case g: GetResponse => Right(g)
     }
   }
 
@@ -293,7 +293,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def revAsync(callback: (Either[ErrorResponse, RevResponse]) => Unit) {
     completeFuture[RevResponse](RevRequest, callback) {
-      case Right(r@RevResponse(_)) => Right(r)
+      case r: RevResponse => Right(r)
     }
   }
 
@@ -305,7 +305,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def waitAsync(glob: String, rev: Long, waitFor: Long = Long.MaxValue)(callback: (Either[ErrorResponse, WaitResponse]) => Unit) = {
     completeFuture[WaitResponse](WaitRequest(glob, rev, waitFor), callback) {
-      case Right(w@WaitResponse(_, _, _)) => Right(w)
+      case w: WaitResponse => Right(w)
     }
   }
 
@@ -317,7 +317,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def statAsync(path: String, rev: Long)(callback: (Either[ErrorResponse, StatResponse]) => Unit) = {
     completeFuture[StatResponse](StatRequest(path, rev), callback) {
-      case Right(s@StatResponse(_, _, _)) => Right(s)
+      case s: StatResponse => Right(s)
     }
   }
 
@@ -336,7 +336,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def getdirAsync(dir: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, GetdirResponse]) => Unit) = {
     completeFuture[GetdirResponse](GetdirRequest(dir, rev, offset), callback) {
-      case Right(g@GetdirResponse(_, _)) => Right(g)
+      case g: GetdirResponse => Right(g)
     }
   }
 
@@ -348,7 +348,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
 
   def walkAsync(glob: String, rev: Long, offset: Int)(callback: (Either[ErrorResponse, WalkResponse]) => Unit) = {
     completeFuture[WalkResponse](WalkRequest(glob, rev, offset), callback) {
-      case Right(w@WalkResponse(_, _, _)) => Right(w)
+      case w:WalkResponse => Right(w)
     }
   }
 
@@ -390,7 +390,7 @@ class Flange(doozerUri: String, failoverStrategy: List[String] => Iterable[Strin
   def addConnectionListener(listener: DoozerConnectionListener) = connection ! AddListener(listener)
 }
 
-class ClientState(val secret: String, var hosts: Iterable[String], var tag: Int = 0, val listeners: HashSet[DoozerConnectionListener] = HashSet.empty[DoozerConnectionListener])
+class ClientState(val secret: Option[String], var hosts: Iterable[String], var tag: Int = 0, val listeners: HashSet[DoozerConnectionListener] = HashSet.empty[DoozerConnectionListener])
 
 class ConnectionFailedException(val host: String, cause: Throwable) extends RuntimeException(cause)
 
